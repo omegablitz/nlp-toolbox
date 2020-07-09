@@ -18,7 +18,7 @@ import itertools
 
 # Point to instabase SDK, use SDK to download
 import sys
-sys.path.append('/Users/aaronvontell/Projects/instabase/sdk/src/py')
+sys.path.append('/Users/ahsaasbajaj/Documents/Code/instabase/sdk/src/py')
 import importlib
 import instabase_sdk
 importlib.reload(instabase_sdk)
@@ -26,14 +26,13 @@ from instabase_sdk import Instabase
 
 PUNC_TABLE = str.maketrans({key: None for key in string.punctuation})
 
-sys.path.append('/Users/aaronvontell/Projects/ib-local/company-name')
-from ibnlp_utils.rule_features import rules
-from ibnlp_utils.preprocessing import preprocessing_rules
+from rule_features import rules
+from preprocessing import preprocessing_rules
 
 # Import instabase
 import sys
 sys.path.append(
-    '/Users/aaronvontell/Projects/instabase/distributed-tasks/celery/app-tasks/build/py'
+    '/Users/ahsaasbajaj/Documents/Code/instabase/distributed-tasks/celery/app-tasks/build/py'
 )
 from instabase.ocr.client.libs.ibocr import ParsedIBOCRBuilder
 
