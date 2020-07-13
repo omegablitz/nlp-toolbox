@@ -27,9 +27,6 @@ from instabase_sdk import Instabase
 
 PUNC_TABLE = str.maketrans({key: None for key in string.punctuation})
 
-from rule_features import rules
-from preprocessing import preprocessing_rules
-
 from test_classifier import infer_classifier
 
 # Import instabase
