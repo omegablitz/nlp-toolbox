@@ -459,7 +459,7 @@ class BERTUtils:
       with torch.no_grad():
         bert_embeddings = \
             model(torch.tensor([bert_tokens_sentence]).to(device))[0].squeeze(0)
-        f_emb_avg = torch.mean(bert_embeddings, axis=0).cpu().numpy()
+        f_emb_avg = torch.mean(bert_embeddings, dim=0).cpu().numpy()
         EMBEDDING_CACHE.bert[sent] = f_emb_avg
 
 
