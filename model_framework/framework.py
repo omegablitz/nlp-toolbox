@@ -8,6 +8,7 @@ import logging
 import numpy as np
 import math
 
+from sklearn.metrics import f1_score, precision_score, recall_score
 from transformers import BertModel
 from transformers import BertTokenizer
 import numpy as np
@@ -55,12 +56,16 @@ class Usecase():
         self.config = config
         self.setDataset()
         self.setLabelsDict()
+        self.setCatDict()
 
     def setDataset(self):
       self.dataset = self.config['dataset']
 
     def setLabelsDict(self):
         self.labels_dict = self.config['labels_dict']
+    
+    def setCatDict(self):
+        self.cat_dict = self.config['cat_dict']
 
 
 class StringProcessing():
@@ -88,7 +93,7 @@ class StringProcessing():
         ans = []
         for p in names:
             if p != '':
-                ans.append(p)
+                ans.append(p.lower().strip())
                 
         result = " ".join(ans)
         result = result.lower().strip()
@@ -173,7 +178,6 @@ class DataCuration():
         for fname in files:
             fpath = os.path.join(data_dir, fname)
             f = open(fpath)
-            ext = fpath.split('.')[-1]
             file = json.load(f)
             dictionary = file[0]
             dictionary.keys()
@@ -294,14 +298,144 @@ class FeatureEngineering():
         test_samples = test_samples.dropna()
         return test_samples
 
+    def generate_test_samples_from_candidates(self):
+        test_samples = {}
+        for key in self.data.candidates:
+            candidate_list = self.data.candidates[key]
+            labels = [np.nan] * len(candidate_list)
+            df = pd.DataFrame(list(zip(candidate_list, labels)), columns=['context', 'label'])
+            df = df.drop_duplicates()  # redundant strings
+            df['context'] = df['context'].astype(str)
+            df['label'] = df['label'].astype(float)
+            test_samples[key] = df
+        return test_samples
+
 
 class ModelEvaluator():
-    def setModelConfig(self, model_config):
+    def __init__(self, usecase):
+        self.labels_dict = usecase.labels_dict
+        self.cat_dict = usecase.cat_dict
+
+    def set_config(self, model_config, eval_config):
         self.model_config = model_config
+        self.eval_config = eval_config
 
-    def runEvaluation(self, testdata):
+    def getRetrRelSet(self, retrieved, relevant):
+        if isinstance(retrieved, list):
+            retrieved_set = set(retrieved) # model (recommendations)
+        elif isinstance(retrieved, str):
+            # set with one element
+            retrieved_set = {retrieved} 
+        elif isinstance(retrieved, float):
+            # empty dataframe cell
+            retrieved_set = {}
+
+        if isinstance(relevant, list):
+            relevant_set = set(relevant) # gold (saw)
+        elif isinstance(relevant, str):
+            relevant_set = {relevant}
+        elif isinstance(relevant, float):
+            relevant_set = {}
+            
+        return retrieved_set, relevant_set
+
+    def getPrecisionRecall(self, retrieved, relevant):
+        # do lower() and strip() here
+        # "recommended movies saw by the user" => retrieved.intersection(relevant)
+        # To get the "number of recommended movie that the user saw":
+        
+        
+        clean_retrieved = set([StringProcessing.clean_string(r) for r in retrieved])        
+        clean_relevant = set([StringProcessing.clean_string(r) for r in relevant])
+        
+        intersect = len(clean_retrieved.intersection(clean_relevant))
+
+        if len(clean_retrieved) == 0:
+            precision = 1
+        else:
+            precision = intersect/len(clean_retrieved)
+
+        if len(clean_relevant) == 0:
+            # some goldens don't have company names in Resume
+            recall = 1
+        else:
+            recall = intersect/len(clean_relevant)
+        
+        return precision, recall
+
+    def run_evaluation(self, testdata):
         model_file_or_path = self.model_config['model_file_or_path']
-        num_labels = self.model_config['num_labels']
-        gpu = self.model_config['gpu']
+        self.num_labels = self.model_config['num_labels']
+        gpu = self.eval_config['gpu']
+        if self.eval_config['use_goldens']: 
+            # testdata is single dataframe as data is generated using goldens csv
+            return infer_classifier(model_file_or_path, testdata, self.num_labels, gpu)
+        else:
+            # test_data is a dictionary {'filename' : dataframe}
+            results = {}
+            for key in testdata:
+                results[key] = infer_classifier(model_file_or_path, testdata[key], self.num_labels, gpu)
+            return results
 
-        return infer_classifier(model_file_or_path, testdata, num_labels, gpu)
+    def analyze_golden_result(self, results):
+        labels = [x for x in range(self.num_labels - 1)] # Not to include 'None' class since it is never in true_label
+        true_labels = results['label']
+        predictions = results['predicted']
+
+        # Overall Score
+        micro_precision = precision_score(true_labels, predictions, labels=labels, average="micro")
+        micro_recall = recall_score(true_labels, predictions,  labels=labels, average="micro")
+        micro_f1 = f1_score(true_labels, predictions, labels=labels, average="micro")
+        print('Micro Test R: {0:0.4f}, P: {1:0.4f}, F1: {2:0.4f}'.format(micro_recall, micro_precision, micro_f1))
+
+        macro_precision = precision_score(true_labels, predictions, labels=labels, average="macro")
+        macro_recall = recall_score(true_labels, predictions, labels=labels, average="macro")
+        macro_f1 = f1_score(true_labels, predictions, labels=labels, average="macro")
+        print('Macro Test R: {0:0.4f}, P: {1:0.4f}, F1: {2:0.4f}'.format(macro_recall, macro_precision, macro_f1))
+
+        # Class Wise Score
+        for lab in labels:
+            # micro vs macro doesn't matter in case of single-label
+            precision = precision_score(true_labels, predictions, labels=[lab], average="micro")
+            recall = recall_score(true_labels, predictions,  labels=[lab], average="micro")
+            f1 = f1_score(true_labels, predictions, labels=[lab], average="micro")
+            print('Category: {0}, Test R: {1:0.4f}, P: {2:0.4f}, F1: {3:0.4f}'.format(self.cat_dict[lab], recall, precision, f1))
+    
+    def analyze_overall_result(self, results, goldens, candidates_fields):
+        # results is a list of dataframes (one for each file) -- BERT's outputs
+        person_recall = []
+        person_precision = []
+        org_recall = []
+        org_precision = []
+
+        for key in results:
+            bert_results = results[key]
+            bert_person_df = bert_results[bert_results['predicted'] == self.labels_dict['person']]
+            bert_org_df = bert_results[bert_results['predicted'] == self.labels_dict['org']]
+            
+            retrieved_person = bert_person_df['context'].tolist()
+            retrieved_org = bert_org_df['context'].tolist()
+            relevant_person = goldens.loc[key, candidates_fields['person']]
+            relevant_org = goldens.loc[key, candidates_fields['org']]
+            
+            # PERSON NAMES
+            retrieved, relevant = self.getRetrRelSet(retrieved_person, relevant_person)
+            precision, recall = self.getPrecisionRecall(retrieved, relevant)
+            person_precision.append(precision)
+            person_recall.append(recall)
+
+            # ORG NAMES
+            retrieved, relevant = self.getRetrRelSet(retrieved_org, relevant_org)
+            precision, recall = self.getPrecisionRecall(retrieved, relevant)
+            org_precision.append(precision)
+            org_recall.append(recall)
+    
+        r = np.mean(person_recall)
+        p = np.mean(person_precision)
+        f1 = 2*p*r/(p + r)
+        print("For field {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format('person', r, p, f1))
+
+        r = np.mean(org_recall)
+        p = np.mean(org_precision)
+        f1 = 2*p*r/(p + r)
+        print("For field {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format('org', r, p, f1))
