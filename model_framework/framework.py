@@ -7,6 +7,7 @@ import string
 import logging
 import numpy as np
 import math
+import ast
 
 from sklearn.metrics import f1_score, precision_score, recall_score
 from transformers import BertModel
@@ -408,8 +409,13 @@ class ModelEvaluator():
         org_recall = []
         org_precision = []
 
+        final_results = {}
+        final_results['person'] = {}
+        final_results['org'] = {}
+
         for key in results:
             bert_results = results[key]
+            bert_results['predicted'] = bert_results['predicted'].astype(int)
             bert_person_df = bert_results[bert_results['predicted'] == self.labels_dict['person']]
             bert_org_df = bert_results[bert_results['predicted'] == self.labels_dict['org']]
             
@@ -423,13 +429,16 @@ class ModelEvaluator():
             precision, recall = self.getPrecisionRecall(retrieved, relevant)
             person_precision.append(precision)
             person_recall.append(recall)
+            final_results['person'][key] = retrieved
 
             # ORG NAMES
             retrieved, relevant = self.getRetrRelSet(retrieved_org, relevant_org)
             precision, recall = self.getPrecisionRecall(retrieved, relevant)
             org_precision.append(precision)
             org_recall.append(recall)
-    
+            final_results['org'][key] = retrieved
+            
+
         r = np.mean(person_recall)
         p = np.mean(person_precision)
         f1 = 2*p*r/(p + r)
@@ -439,3 +448,101 @@ class ModelEvaluator():
         p = np.mean(org_precision)
         f1 = 2*p*r/(p + r)
         print("For field {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format('org', r, p, f1))
+        return final_results
+
+    def printScores(self, all_recall, all_precision, person_name_models, org_name_models):
+        print("\nPerson Name Scores")
+        for model in person_name_models:
+            r = np.mean(all_recall[model])
+            p = np.mean(all_precision[model])
+            f1 = 2*p*r/(p + r)
+            print("For model {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format(model, r, p, f1))
+
+        print("\nOrg Name Scores")
+        for model in org_name_models:
+            r = np.mean(all_recall[model])
+            p = np.mean(all_precision[model])
+            f1 = 2*p*r/(p + r)
+            print("For model {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format(model, r, p, f1))
+
+    def analyze_refiner_results(self, result_file_path, goldens, candidates_fields):
+        models = ['names_vontell', 'names_token_matcher']
+        spacy_models = ['names_spacy', 'org_spacy']
+
+        # add bert in below list, if precomputed results available from analyze_overall_result()
+        person_name_models = ['names_vontell', 'names_token_matcher', 'names_spacy']
+        org_name_models = ['org_spacy']
+
+        all_recall = {}
+        all_precision = {}
+
+        final_results = {}
+        final_results['person'] = {}
+        final_results['org'] = {}
+
+        f = open(result_file_path)
+        results = json.load(f)
+        for result in results:
+            # one file at a time
+            key = result['absolute_ibocr_path'].split('/')[-1]
+            key = ".".join(key.split('.')[:-1])
+            names = {}
+            phrases = result['refined_phrases']
+            for phrase in phrases:
+                # one model/refiner field at a time
+                label = phrase['label']
+                if label in models:
+                    word_list = ast.literal_eval(phrase["word"])
+                    cleaned_word_list = [" ".join(w.split()) for w in word_list]
+
+                elif label in spacy_models:
+                    jsonstr = phrase["word"]
+                    json_dict = json.loads(jsonstr)
+                    entities = json_dict["entities"]
+                    cleaned_word_list = [" ".join(ent_json['entity'].split()) for ent_json in entities]
+                    # remove all occurences of empty string
+                    cleaned_word_list = list(filter(('').__ne__, cleaned_word_list))
+
+
+                names[label] = cleaned_word_list
+        
+            relevant_person = goldens.loc[key, candidates_fields['person']]
+            relevant_org = goldens.loc[key, candidates_fields['org']]
+
+            # PERSON NAMES
+            for model in person_name_models:
+                retrieved, relevant = self.getRetrRelSet(names[model], relevant_person)
+                precision, recall = self.getPrecisionRecall(retrieved, relevant)
+                
+                if model in final_results['person']:
+                    final_results['person'][model][key] = retrieved
+                else:
+                    final_results['person'][model] = {}
+
+                if model in all_recall:
+                    all_recall[model].append(recall)
+                    all_precision[model].append(precision)
+                else:
+                    all_recall[model] = [recall]
+                    all_precision[model] = [precision]    
+            
+            
+            # ORG NAMES
+            for model in org_name_models:
+                retrieved, relevant = self.getRetrRelSet(names[model], relevant_org)
+                precision, recall = self.getPrecisionRecall(retrieved, relevant)
+                        
+                if model in final_results['org']:
+                    final_results['org'][model][key] = retrieved
+                else:
+                    final_results['org'][model] = {}
+
+                if model in all_recall:
+                    all_recall[model].append(recall)
+                    all_precision[model].append(precision)
+                else:
+                    all_recall[model] = [recall]
+                    all_precision[model] = [precision]    
+
+        self.printScores(all_recall, all_precision, person_name_models, org_name_models)
+        return final_results
