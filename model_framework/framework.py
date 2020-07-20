@@ -17,7 +17,8 @@ import logging
 import itertools
 import difflib
 
-# Point to instabase SDK, use SDK to download
+# Point to instabase SDK, use SDK to download. We only need this for development, can remove this later 
+# ToDo: This is fine for now, but we should make it so that this is an ENV variable (or eventually an actual pip dependency)
 import sys
 sys.path.append('/Users/ahsaasbajaj/Documents/Code/instabase/sdk/src/py')
 import importlib
@@ -29,7 +30,8 @@ PUNC_TABLE = str.maketrans({key: None for key in string.punctuation})
 
 from infer_bert_classifier import get_classifier_inference
 
-# Import instabase
+# Import instabase. We only need this for development, can remove this later 
+# ToDo: This is fine for now, but we should make it so that this is an ENV variable (or eventually an actual pip dependency)
 import sys
 sys.path.append(
     '/Users/ahsaasbajaj/Documents/Code/instabase/distributed-tasks/celery/app-tasks/build/py'
@@ -47,34 +49,28 @@ class DatasetWarning():
 class Usecase():
     def __init__(self, usecase):
         self.usecase = usecase
-    
-    def __repr__(self):
-        return 'Usecase[{}, {}, {}]'.format(self.usecase, self.dataset)
 
-    def setConfig(self, config):
+    def set_config(self, config):
         self.config = config
-        self.setDataset()
-        self.setLabelsDict()
-        self.setCatDict()
+        self.set_dataset()
+        self.set_labels_dict()
 
-    def setDataset(self):
+    def set_dataset(self):
       self.dataset = self.config['dataset']
 
-    def setLabelsDict(self):
+    def set_labels_dict(self):
         self.labels_dict = self.config['labels_dict']
-    
-    def setCatDict(self):
-        self.cat_dict = self.config['cat_dict']
+        self.cat_dict = {v: k for k, v in self.labels_dict.items()}
 
 
 class StringProcessing():
     @staticmethod
-    def isSafe(row):
+    def remove_digits_filter_by_length(row, min_len):
         # retunrs True if string doesn't contain any numbers
         if any(char.isdigit() for char in row):
             return False
-        if len(row) < 5:
-            # string less than 5 characters or single word
+        if len(row) < min_len:
+            # string less than min_len characters or single word
             return False
         return True
     
@@ -102,6 +98,7 @@ class DataCuration():
 
   def __init__(self, access_token, dataset_paths, dataset_config,
                goldens_paths, goldens_config):
+    # ToDo: Ideally, we should make this configurable, since sometimes we will want instabase.com, dogfood, a custom URL at a customer site, etc.
     self.ib = Instabase('https://instabase.com', access_token)
     self.dataset_config = dataset_config
     self.golden_config = goldens_config
@@ -116,7 +113,7 @@ class DataCuration():
     self._load_ib_dataset(dataset_paths, dataset_config)
     self._load_goldens(goldens_paths, goldens_config)
     if dataset_config['convert2txt']:
-        self.processIBOCR2txt(dataset_config)
+        self.process_IBOCR_to_txt(dataset_config)
 
   def _load_goldens(self, goldens_paths, goldens_config):
     goldens_type = goldens_config.get('file_type')
@@ -167,8 +164,8 @@ class DataCuration():
           identifier = dataset_config.get('identifier')(file)
         self.dataset.update({identifier: content})
 
-  def processIBOCR2txt(self, dataset_config):
-    #Todo: add reading from ib
+  def process_IBOCR_to_txt(self, dataset_config):
+    #ToDo: add reading from ib
     self.texts = {}
     for data_dir in self.datadir:
         files = os.listdir(data_dir)
@@ -185,10 +182,12 @@ class DataCuration():
                 identifier = dataset_config.get('identifier')(fname)
             self.texts.update({identifier: texts})
 
-  def processIBOCR2candidatePhrases(self, dataset_config, processing_config):
-    #Todo: add reading from ib
+  def process_IBOCR_to_candidate_phrases(self, dataset_config, processing_config):
+    #ToDo: add reading from ib
 
     self.candidates = {}
+    # ToDo: Eventually (or now, not sure) we would also want to cluster based on Y distance. 
+    # This clustering approach may be good to separate out into a separate file that has a bunch of "algorithms" for text / IBOCR processing
     X_DIST_THRESHOLD = processing_config['X_DIST_THRESHOLD']
     for data_dir in self.datadir:
         files = os.listdir(data_dir)
@@ -222,7 +221,7 @@ class DataCuration():
             candidates = []
             for phrase in phrases:
                 phrase = StringProcessing.find_remove_opening_token(phrase, '"')
-                if StringProcessing.isSafe(phrase):
+                if StringProcessing.remove_digits_filter_by_length(phrase, min_len=5):
                     candidates.append(phrase)
 
             if dataset_config.get('identifier'):
@@ -319,7 +318,7 @@ class ModelEvaluator():
         self.model_config = model_config
         self.eval_config = eval_config
 
-    def getRetrRelSet(self, retrieved, relevant):
+    def get_Retr_Rel_Set(self, retrieved, relevant):
         if isinstance(retrieved, list):
             retrieved_set = set(retrieved) # model (recommendations)
         elif isinstance(retrieved, str):
@@ -338,12 +337,7 @@ class ModelEvaluator():
             
         return retrieved_set, relevant_set
 
-    def getPrecisionRecall(self, retrieved, relevant):
-        # do lower() and strip() here
-        # "recommended movies saw by the user" => retrieved.intersection(relevant)
-        # To get the "number of recommended movie that the user saw":
-        
-        
+    def get_Precision_Recall(self, retrieved, relevant):
         clean_retrieved = set([StringProcessing.clean_string(r) for r in retrieved])        
         clean_relevant = set([StringProcessing.clean_string(r) for r in relevant])
         
@@ -424,15 +418,15 @@ class ModelEvaluator():
             relevant_org = goldens.loc[key, candidates_fields['org']]
             
             # PERSON NAMES
-            retrieved, relevant = self.getRetrRelSet(retrieved_person, relevant_person)
-            precision, recall = self.getPrecisionRecall(retrieved, relevant)
+            retrieved, relevant = self.get_Retr_Rel_Set(retrieved_person, relevant_person)
+            precision, recall = self.get_Precision_Recall(retrieved, relevant)
             person_precision.append(precision)
             person_recall.append(recall)
             final_results['person'][key] = retrieved
 
             # ORG NAMES
-            retrieved, relevant = self.getRetrRelSet(retrieved_org, relevant_org)
-            precision, recall = self.getPrecisionRecall(retrieved, relevant)
+            retrieved, relevant = self.get_Retr_Rel_Set(retrieved_org, relevant_org)
+            precision, recall = self.get_Precision_Recall(retrieved, relevant)
             org_precision.append(precision)
             org_recall.append(recall)
             final_results['org'][key] = retrieved
@@ -449,7 +443,7 @@ class ModelEvaluator():
         logging.info("For field {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format('org', r, p, f1))
         return final_results
 
-    def printScores(self, all_recall, all_precision, person_name_models, org_name_models):
+    def print_scores(self, all_recall, all_precision, person_name_models, org_name_models):
         logging.info("\nPerson Name Scores")
         for model in person_name_models:
             r = np.mean(all_recall[model])
@@ -510,8 +504,8 @@ class ModelEvaluator():
 
             # PERSON NAMES
             for model in person_name_models:
-                retrieved, relevant = self.getRetrRelSet(names[model], relevant_person)
-                precision, recall = self.getPrecisionRecall(retrieved, relevant)
+                retrieved, relevant = self.get_Retr_Rel_Set(names[model], relevant_person)
+                precision, recall = self.get_Precision_Recall(retrieved, relevant)
                 
                 if model in final_results['person']:
                     final_results['person'][model][key] = retrieved
@@ -528,8 +522,8 @@ class ModelEvaluator():
             
             # ORG NAMES
             for model in org_name_models:
-                retrieved, relevant = self.getRetrRelSet(names[model], relevant_org)
-                precision, recall = self.getPrecisionRecall(retrieved, relevant)
+                retrieved, relevant = self.get_Retr_Rel_Set(names[model], relevant_org)
+                precision, recall = self.get_Precision_Recall(retrieved, relevant)
                         
                 if model in final_results['org']:
                     final_results['org'][model][key] = retrieved
@@ -543,5 +537,5 @@ class ModelEvaluator():
                     all_recall[model] = [recall]
                     all_precision[model] = [precision]    
 
-        self.printScores(all_recall, all_precision, person_name_models, org_name_models)
+        self.print_scores(all_recall, all_precision, person_name_models, org_name_models)
         return final_results
