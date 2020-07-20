@@ -1,25 +1,29 @@
 import argparse
-import data_utils
+import bert_utils
 import torch
 from torch.utils.data import TensorDataset, DataLoader, SequentialSampler
 from sklearn.metrics import f1_score, precision_score, recall_score
 import pandas as pd
 import numpy as np
 import os, sys
-from data_utils import readData, flat_accuracy, save_plots_models
+from bert_utils import convert_sentences_to_bert_inputs, flatten_tensor_and_get_accuracy, save_plots_models
 from transformers import BertForSequenceClassification, BertTokenizer
+import logging
+import transformers
 
 sys.path.insert(0, os.path.abspath('..'))
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
-def infer_classifier(modelPath, testdf, num_labels, gpu):
+def get_classifier_inference(modelPath, testdf, num_labels, gpu):
+    logging.getLogger('transformers').setLevel(logging.WARNING)
+
     model_name_or_path = "bert-large-cased"
     device = torch.device("cuda" if (gpu and torch.cuda.is_available()) else "cpu")
-    print('Device: ', device)
+    logging.debug('Device: {}'.format(device))
 
     model_state_dict = torch.load(modelPath, map_location=device)
     model = BertForSequenceClassification.from_pretrained(model_name_or_path, state_dict=model_state_dict, num_labels=num_labels)
-    print("Fine-tuned model loaded with labels = ", model.num_labels)
+    logging.debug("Fine-tuned model loaded with labels = {}".format(model.num_labels))
 
     model = model.to(device)
     model.eval()
@@ -27,7 +31,7 @@ def infer_classifier(modelPath, testdf, num_labels, gpu):
     tokenizer = BertTokenizer.from_pretrained(model_name_or_path, do_lower_case=True)
 
     # testing
-    input_ids, labels, attention_masks = readData(tokenizer, testdf)
+    input_ids, labels, attention_masks = convert_sentences_to_bert_inputs(tokenizer, testdf)
     prediction_inputs = torch.tensor(input_ids)
     prediction_masks = torch.tensor(attention_masks)
     prediction_labels = torch.tensor(labels)
@@ -64,7 +68,7 @@ def infer_classifier(modelPath, testdf, num_labels, gpu):
         # Store predictions and true labels
         predictions.append(logits)
         true_labels.append(label_ids)
-        tmp_eval_accuracy = flat_accuracy(logits, label_ids)
+        tmp_eval_accuracy = flatten_tensor_and_get_accuracy(logits, label_ids)
         eval_accuracy += tmp_eval_accuracy
         nb_eval_steps += 1
         pred_flat = np.argmax(logits, axis=1).flatten()
@@ -78,7 +82,7 @@ def infer_classifier(modelPath, testdf, num_labels, gpu):
 
     if len(validLabels) != 0:
         # otherwise it is inference mode with all candidate phrases (with label = NA)
-        print('Test Accuracy Accuracy: {0:0.4f}'.format((float(eval_accuracy) / float(nb_eval_steps))))
+        logging.info('Test Accuracy Accuracy: {0:0.4f}'.format((float(eval_accuracy) / float(nb_eval_steps))))
 
         flat_predictions = [item for sublist in predictions for item in sublist]
         flat_predictions = np.argmax(flat_predictions, axis=1).flatten()
@@ -89,12 +93,12 @@ def infer_classifier(modelPath, testdf, num_labels, gpu):
         micro_precision = precision_score(flat_true_labels, flat_predictions, labels=labels, average="micro")
         micro_recall = recall_score(flat_true_labels, flat_predictions,  labels=labels, average="micro")
         micro_f1 = f1_score(flat_true_labels, flat_predictions, labels=labels, average="micro")
-        print('Micro Test R: {0:0.4f}, P: {1:0.4f}, F1: {2:0.4f}'.format(micro_recall, micro_precision, micro_f1))
+        logging.info('Micro Test R: {0:0.4f}, P: {1:0.4f}, F1: {2:0.4f}'.format(micro_recall, micro_precision, micro_f1))
 
         macro_precision = precision_score(flat_true_labels, flat_predictions, labels=labels, average="macro")
         macro_recall = recall_score(flat_true_labels, flat_predictions, labels=labels, average="macro")
         macro_f1 = f1_score(flat_true_labels, flat_predictions, labels=labels, average="macro")
-        print('Macro Test R: {0:0.4f}, P: {1:0.4f}, F1: {2:0.4f}'.format(macro_recall, macro_precision, macro_f1))
+        logging.info('Macro Test R: {0:0.4f}, P: {1:0.4f}, F1: {2:0.4f}'.format(macro_recall, macro_precision, macro_f1))
 
     sentences = testdf['context'].tolist()  # un-tokenized sentences
 

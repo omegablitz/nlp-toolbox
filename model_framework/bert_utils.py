@@ -3,11 +3,11 @@ from keras.preprocessing.sequence import pad_sequences
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import logging
 
-
-def readData(tokenizer, df):
+def convert_sentences_to_bert_inputs(tokenizer, df):
 	df['context'] = df['context'].astype(str)
-
+	
 	# # only for debugging
 	# df = df[:100]
 
@@ -23,7 +23,7 @@ def readData(tokenizer, df):
 
 	tokenized_texts = [tokenizer.tokenize(sent) for sent in sentences]
 
-	print("Tokenize the first sentence:", tokenized_texts[0])
+	logging.debug("Tokenize the first sentence: {}".format(tokenized_texts[0]))
 
 	MAX_LEN = 128
 
@@ -39,14 +39,14 @@ def readData(tokenizer, df):
 		attention_masks.append(seq_mask)
 
 	if labels is not None:
-		print('Labels length:', len(labels))
-		print('Tokenized texts Length: ', len(tokenized_texts))
+		logging.debug('Labels length: {}'.format(len(labels)))
+		logging.debug('Tokenized texts Length: {}'.format(len(tokenized_texts)))
 		assert (len(labels) == len(tokenized_texts))
 
 	return input_ids, labels, attention_masks
 
 
-def flat_accuracy(preds, labels):
+def flatten_tensor_and_get_accuracy(preds, labels):
 	pred_flat = np.argmax(preds, axis=1).flatten()
 	labels_flat = labels.flatten()
 	return np.sum(pred_flat == labels_flat) / len(labels_flat)
@@ -66,7 +66,7 @@ def save_plots_models(outDir, train_loss_set, train_acc_set, val_acc_set, model_
 	plt.plot(train_loss_set)
 	plotFile = outDir + '/loss_plot' + epoch + '.pdf'
 	plt.savefig(plotFile)
-	print('Saving loss plot in path: ', plotFile)
+	logging.info('Saving loss plot in path: {}'.format(plotFile))
 
 	plt.figure(figsize=(15, 8))
 	plt.title("Training/Val Accuracy")
@@ -77,7 +77,7 @@ def save_plots_models(outDir, train_loss_set, train_acc_set, val_acc_set, model_
 	plt.legend(['Train Acc', 'Val Acc'], loc='upper left')
 	plotFile = outDir + '/acc_plot' + epoch + '.pdf'
 	plt.savefig(plotFile)
-	print('Saving loss plot in path: ', plotFile)
+	logging.info('Saving loss plot in path: {}'.format(plotFile))
 
 	modelPath = outDir + "/model" + epoch + ".pt"
 	torch.save(model_sd, modelPath)

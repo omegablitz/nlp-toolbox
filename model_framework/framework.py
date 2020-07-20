@@ -10,8 +10,6 @@ import math
 import ast
 
 from sklearn.metrics import f1_score, precision_score, recall_score
-from transformers import BertModel
-from transformers import BertTokenizer
 import numpy as np
 import torch
 from torch import nn
@@ -29,7 +27,7 @@ from instabase_sdk import Instabase
 
 PUNC_TABLE = str.maketrans({key: None for key in string.punctuation})
 
-from test_classifier import infer_classifier
+from infer_bert_classifier import get_classifier_inference
 
 # Import instabase
 import sys
@@ -138,8 +136,8 @@ class DataCuration():
         golden_df = golden_df.drop('in_src', axis=1)
         self.golden = golden_df.set_index(goldens_config['index_field_name'])
 
-        print('Total files Goldens: ', self.golden_all.shape)
-        print('Total files found in the source', self.golden.shape)
+        logging.info('Total files Goldens: {}'.format(self.golden_all.shape))
+        logging.info('Total files found in the source: {}'.format(self.golden.shape))
 
   def _load_ib_dataset(self, dataset_paths, dataset_config):
     self.dataset = {}
@@ -174,7 +172,7 @@ class DataCuration():
     self.texts = {}
     for data_dir in self.datadir:
         files = os.listdir(data_dir)
-        print("Processing {} IBOCR files to txt".format(len(files)))
+        logging.info("Processing {} IBOCR files to txt".format(len(files)))
 
         for fname in files:
             fpath = os.path.join(data_dir, fname)
@@ -194,7 +192,7 @@ class DataCuration():
     X_DIST_THRESHOLD = processing_config['X_DIST_THRESHOLD']
     for data_dir in self.datadir:
         files = os.listdir(data_dir)
-        print("Generating candidates for {} files".format(len(files)))
+        logging.info("Generating candidates for {} files".format(len(files)))
         for fname in files:
             fpath = os.path.join(data_dir, fname)
             f = open(fpath)
@@ -256,17 +254,17 @@ class DataCuration():
                 org_found_files.append(key)
             
         #     if this_person not in cds:
-        #         print(key)
-        #         print(this_person, difflib.get_close_matches(this_person, cds), '\n')
+        #         logging.debug(key)
+        #         logging.debug(this_person, difflib.get_close_matches(this_person, cds), '\n')
             # if this_org not in cds:
-            #     print(key)
-            #     print(this_org, difflib.get_close_matches(this_org, cds), '\n')
+            #     logging.debug(key)
+            #     logging.debug(this_org, difflib.get_close_matches(this_org, cds), '\n')
             filenames.append(key)
 
 
         total_files = len(filenames)
-        print("For X_DIST_THRESHOLD configuraion: {0}".format(processing_config['X_DIST_THRESHOLD']))
-        print("total files: {0}\nperson names found in candidates: {1}\norg names found in candidates: {2}\n".format(total_files, len(person_found_files), len(org_found_files)))
+        logging.info("For X_DIST_THRESHOLD configuraion: {0}".format(processing_config['X_DIST_THRESHOLD']))
+        logging.info("total files: {0}\nperson names found in candidates: {1}\norg names found in candidates: {2}\n".format(total_files, len(person_found_files), len(org_found_files)))
     
 
 class FeatureEngineering():
@@ -370,12 +368,13 @@ class ModelEvaluator():
         gpu = self.eval_config['gpu']
         if self.eval_config['use_goldens']: 
             # testdata is single dataframe as data is generated using goldens csv
-            return infer_classifier(model_file_or_path, testdata, self.num_labels, gpu)
+            return get_classifier_inference(model_file_or_path, testdata, self.num_labels, gpu)
         else:
             # test_data is a dictionary {'filename' : dataframe}
             results = {}
             for key in testdata:
-                results[key] = infer_classifier(model_file_or_path, testdata[key], self.num_labels, gpu)
+                logging.info("inferring BERT classifier for file {}".format(key))
+                results[key] = get_classifier_inference(model_file_or_path, testdata[key], self.num_labels, gpu)
             return results
 
     def analyze_golden_result(self, results):
@@ -387,12 +386,12 @@ class ModelEvaluator():
         micro_precision = precision_score(true_labels, predictions, labels=labels, average="micro")
         micro_recall = recall_score(true_labels, predictions,  labels=labels, average="micro")
         micro_f1 = f1_score(true_labels, predictions, labels=labels, average="micro")
-        print('Micro Test R: {0:0.4f}, P: {1:0.4f}, F1: {2:0.4f}'.format(micro_recall, micro_precision, micro_f1))
+        logging.info('Micro Test R: {0:0.4f}, P: {1:0.4f}, F1: {2:0.4f}'.format(micro_recall, micro_precision, micro_f1))
 
         macro_precision = precision_score(true_labels, predictions, labels=labels, average="macro")
         macro_recall = recall_score(true_labels, predictions, labels=labels, average="macro")
         macro_f1 = f1_score(true_labels, predictions, labels=labels, average="macro")
-        print('Macro Test R: {0:0.4f}, P: {1:0.4f}, F1: {2:0.4f}'.format(macro_recall, macro_precision, macro_f1))
+        logging.info('Macro Test R: {0:0.4f}, P: {1:0.4f}, F1: {2:0.4f}'.format(macro_recall, macro_precision, macro_f1))
 
         # Class Wise Score
         for lab in labels:
@@ -400,7 +399,7 @@ class ModelEvaluator():
             precision = precision_score(true_labels, predictions, labels=[lab], average="micro")
             recall = recall_score(true_labels, predictions,  labels=[lab], average="micro")
             f1 = f1_score(true_labels, predictions, labels=[lab], average="micro")
-            print('Category: {0}, Test R: {1:0.4f}, P: {2:0.4f}, F1: {3:0.4f}'.format(self.cat_dict[lab], recall, precision, f1))
+            logging.info('Category: {0}, Test R: {1:0.4f}, P: {2:0.4f}, F1: {3:0.4f}'.format(self.cat_dict[lab], recall, precision, f1))
     
     def analyze_overall_result(self, results, goldens, candidates_fields):
         # results is a list of dataframes (one for each file) -- BERT's outputs
@@ -442,28 +441,28 @@ class ModelEvaluator():
         r = np.mean(person_recall)
         p = np.mean(person_precision)
         f1 = 2*p*r/(p + r)
-        print("For field {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format('person', r, p, f1))
+        logging.info("For field {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format('person', r, p, f1))
 
         r = np.mean(org_recall)
         p = np.mean(org_precision)
         f1 = 2*p*r/(p + r)
-        print("For field {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format('org', r, p, f1))
+        logging.info("For field {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format('org', r, p, f1))
         return final_results
 
     def printScores(self, all_recall, all_precision, person_name_models, org_name_models):
-        print("\nPerson Name Scores")
+        logging.info("\nPerson Name Scores")
         for model in person_name_models:
             r = np.mean(all_recall[model])
             p = np.mean(all_precision[model])
             f1 = 2*p*r/(p + r)
-            print("For model {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format(model, r, p, f1))
+            logging.info("For model {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format(model, r, p, f1))
 
-        print("\nOrg Name Scores")
+        logging.info("\nOrg Name Scores")
         for model in org_name_models:
             r = np.mean(all_recall[model])
             p = np.mean(all_precision[model])
             f1 = 2*p*r/(p + r)
-            print("For model {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format(model, r, p, f1))
+            logging.info("For model {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format(model, r, p, f1))
 
     def analyze_refiner_results(self, result_file_path, goldens, candidates_fields):
         models = ['names_vontell', 'names_token_matcher']
