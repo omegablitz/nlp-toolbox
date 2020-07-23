@@ -450,20 +450,15 @@ class ModelTrainer():
         self.training_args = training_args
 
 class MLP(ModelTrainer):
-    def train(self, X_train, X_test, y_train, y_test):
-        # Neural network
-        model = Sequential()
-        model.add(Dense(512, input_dim=X_train.shape[1], activation='relu'))
-        model.add(Dropout(0.5))
-        model.add(Dense(128, activation='relu'))
-        model.add(Dropout(0.5))
-        model.add(Dense(1, activation='sigmoid'))
-        model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
-        logging.info('Training multilayer perceptron model for {} samples'.format(X_train.shape[0]))
-        history = model.fit(X_train, y_train, validation_data=(X_test, y_test), 
-            epochs=self.training_args['epochs'], batch_size=self.training_args['batch_size'])
-
+    def __init__(self, data_args,  training_args, model):
+        self.data_args = data_args
+        self.training_args = training_args
         self.model = model
+
+    def train(self, X_train, X_test, y_train, y_test):
+        logging.info('Training multilayer perceptron model for {} samples'.format(X_train.shape[0]))
+        history = self.model.fit(X_train, y_train, validation_data=(X_test, y_test), 
+            epochs=self.training_args['epochs'], batch_size=self.training_args['batch_size'])
         self.history = history
 
     def evaluate(self):
@@ -486,7 +481,7 @@ class MLP(ModelTrainer):
         return self.history.history['val_accuracy'][-1]
 
     def analyze(self, found_mapping, comparison_fns, fields=None):
-        # Sample usage: omf_paystubs.evaluate({k: {'employer_name': found_companies[k]} for k in found_companies}, {}, fields=['employer_name'])
+        # Sample usage: omf_paystubs.evaluate({k: {self.data_args['candidates_fields']['org']: found_companies[k]} for k in found_companies}, {}, fields=[self.data_args['candidates_fields']['org']])
 
         """
         comparison_fns: Map<Text, (sample, field, expected, actual, result_dict): None>
@@ -522,7 +517,7 @@ class MLP(ModelTrainer):
         for dataset_file in list(self.data_args['dataset'].dataset.keys()):
             logging.info("Running predictions for file: {}".format(dataset_file))
             try:
-                ibdoc = self.data_args['dataset'].dataset[datasxxet_file].get_joined_page()[0] # 20, 54, 70
+                ibdoc = self.data_args['dataset'].dataset[dataset_file].get_joined_page()[0] # 20, 54, 70
                 featurizer = IBDOCFeaturizer(ibdoc)
                 fvs = featurizer.get_feature_vectors(self.data_args['data_config'])
         #         print(ibdoc.get_text())
@@ -552,7 +547,7 @@ class MLP(ModelTrainer):
         found_count = 0
         for cfile in found_companies:
             try:
-                expected = self.data_args['dataset'].golden.at[cfile, 'employer_name']
+                expected = self.data_args['dataset'].golden.at[cfile, self.data_args['candidates_fields']['org']]
             except Exception as e:
                 print(e)
                 continue
@@ -867,10 +862,11 @@ class FeatureEngineering_MLP(FeatureEngineering):
         self.task = data_args['task']
         self.data = data_args['dataset']
         self.data_config = data_args['data_config']
+        self.candidates_fields = data_args['candidates_fields']
 
     def create_train_test_data(self):
         # Balance samples by removing some non-entity labeled datapoints
-        samples, targets, warnings = self.data.generate_spatial_samples('employer_name', self.data_config)
+        samples, targets, warnings = self.data.generate_spatial_samples(self.candidates_fields['org'], self.data_config)
         pos_idx = np.where(targets == 1)[0]
         num_pos_samples = len(pos_idx)
 
