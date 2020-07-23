@@ -13,14 +13,14 @@ def update_bert_embeddings(allsentences, EMBEDDING_CACHE):
 	if EMBEDDING_CACHE.bert_model:
 		model, device, berttokenizer = EMBEDDING_CACHE.bert_model
 	else:
-		logging.info("Building BERT embeddings")
+		logging.info("Building BERT Model embeddings using pretrained model")
 		device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 		berttokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 		model = BertModel.from_pretrained('bert-base-uncased')
 		model = nn.DataParallel(model)
 		model = model.to(device)
 		EMBEDDING_CACHE.bert_model = (model, device, berttokenizer)
-		logging.info("FINISHED LOADING MODEL")
+		logging.info("Finished Loading Model, computing embeddings")
 
 	for iter, sent in enumerate(allsentences):
 		if sent in EMBEDDING_CACHE.bert:

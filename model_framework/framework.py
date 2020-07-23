@@ -108,6 +108,61 @@ class StringProcessing():
     def clean_token(token):
         return token.lower().translate(PUNC_TABLE)
 
+    @staticmethod
+    def StrictEquality():
+
+        def fn(sample_name, field, expected, actual, result_dict):
+            single_result = dict(sample=sample_name,
+                                field=field,
+                                expected=expected,
+                                actual=actual)
+            if expected != actual:
+                result_dict['false_negatives'].append(single_result)
+            else:
+                result_dict['true_positives'].append(single_result)
+
+        return fn
+
+    @staticmethod
+    def FuzzyStringMatch(ignore_case=True,
+                        reduce_whitespace=True,
+                        remove_punctuation=True,
+                        strip=True):
+
+        def fn(sample_name, field, expected, actual, result_dict):
+            single_result = dict(sample=sample_name,
+                                field=field,
+                                expected=expected,
+                                actual=actual)
+
+            if ignore_case:
+                if expected is not None:
+                    expected = expected.lower()
+                if actual is not None:
+                    actual = actual.lower()
+            if remove_punctuation:
+                if expected is not None:
+                    expected = expected.translate(PUNC_TABLE)
+                if actual is not None:
+                    actual = actual.translate(PUNC_TABLE)
+            if reduce_whitespace:
+                if expected is not None:
+                    expected = re.sub('\s+', ' ', expected)
+                if actual is not None:
+                    actual = re.sub('\s+', ' ', actual)
+            if strip:
+                if expected is not None:
+                    expected = expected.strip()
+                if actual is not None:
+                    actual = actual.strip()
+
+            if expected != actual:
+                result_dict['false_negatives'].append(single_result)
+            else:
+                result_dict['true_positives'].append(single_result)
+
+        return fn
+
 class IbocrTextProcessing():
     @staticmethod
     def process_IBOCR_to_txt(all_data_dirs, dataset_config):
@@ -390,7 +445,8 @@ class EmbeddingCache:
 EMBEDDING_CACHE = EmbeddingCache()
 
 class ModelTrainer():
-    def __init__(self, training_args):
+    def __init__(self, data_args,  training_args):
+        self.data_args = data_args
         self.training_args = training_args
 
 class MLP(ModelTrainer):
@@ -429,6 +485,320 @@ class MLP(ModelTrainer):
         plt.show()
         return self.history.history['val_accuracy'][-1]
 
+    def analyze(self, found_mapping, comparison_fns, fields=None):
+        # Sample usage: omf_paystubs.evaluate({k: {'employer_name': found_companies[k]} for k in found_companies}, {}, fields=['employer_name'])
+
+        """
+        comparison_fns: Map<Text, (sample, field, expected, actual, result_dict): None>
+        """
+        results = {
+            'true_positives': [],
+            'false_positives': [],
+            'true_negatives': [],
+            'false_negatives': []
+        }
+
+        golden = self.data_args['dataset'].golden
+        to_compare = golden.columns
+        if fields:
+            to_compare = fields
+
+        for sample in golden.index:
+            actual = found_mapping.get(sample, {})
+            for field in to_compare:
+                expected_field = golden.at[sample, field]
+                actual_field = actual.get(field)
+                if field in comparison_fns:
+                    comparison_fns[field](sample, field, expected_field, actual_field,
+                                            results)
+                else:
+                    StringProcessing.StrictEquality()(sample, field, expected_field, actual_field,
+                                results)
+        return results
+
+    def predict(self, threshold=0.60, distance_threshold=1.5):
+        
+        results = {}
+        for dataset_file in list(self.data_args['dataset'].dataset.keys()):
+            logging.info("Running predictions for file: {}".format(dataset_file))
+            try:
+                ibdoc = self.data_args['dataset'].dataset[datasxxet_file].get_joined_page()[0] # 20, 54, 70
+                featurizer = IBDOCFeaturizer(ibdoc)
+                fvs = featurizer.get_feature_vectors(self.data_args['data_config'])
+        #         print(ibdoc.get_text())
+        #         print('=================================')
+                predictions = self.model.predict(fvs)
+                predictions = predictions.tolist()
+                sequences = [[]]
+                for i, classification in enumerate(predictions):
+                    if classification[0] > threshold:
+                        token_to_add = featurizer.get_all_tokens()[i]
+                        to_add_start, to_add_height = token_to_add['start_x'], token_to_add['line_height']
+                        if len(sequences[-1]) > 0 and (to_add_start - sequences[-1][-1]['end_x']) <= distance_threshold * to_add_height:
+                            sequences[-1].append(token_to_add)
+                        else:
+                            sequences.append([token_to_add])
+                    elif len(sequences[-1]) > 0:
+                        sequences.append([])
+                companies = [' '.join([ss['word'] for ss in s]) for s in sequences if len(s) > 1]
+                results[dataset_file] = companies
+            except Exception as e:
+                print(e)
+        
+        return results
+
+    def analyze_result(self, found_companies):
+        total = 0
+        found_count = 0
+        for cfile in found_companies:
+            try:
+                expected = self.data_args['dataset'].golden.at[cfile, 'employer_name']
+            except Exception as e:
+                print(e)
+                continue
+            found = '\n\t\t'.join(found_companies[cfile])
+            print(cfile[-10:])
+            print('\t Found:\n\t\t{}'.format(found))
+            print('\t Expected:\n\t\t{}'.format(expected))
+            if expected:  
+                total += 1
+            expected_san = expected.lower().strip().translate(PUNC_TABLE)
+            actual_san = [c.lower().strip().translate(PUNC_TABLE) for c in found_companies[cfile]]
+            is_contained = any([(expected_san in a) for a in actual_san]) or any([(a in expected_san) for a in actual_san])
+            if expected_san in actual_san or is_contained:
+                found_count += 1
+            else:
+                print('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+        print(total)
+        print(found_count)
+        print('Recall: {}'.format(float(found_count)/float(total)))
+
+    def demo(self):
+        ibdoc = self.data_args['dataset'].dataset[list(self.data_args['dataset'].dataset.keys())[54]].get_joined_page()[0] # 20, 54, 70
+        featurizer = IBDOCFeaturizer(ibdoc)
+        fvs = featurizer.get_feature_vectors(self.data_args['data_config'])
+        print(ibdoc.get_text())
+        print('=================================')
+        predictions = self.model.predict(fvs)
+        predictions = predictions.tolist()
+        sequences = [[]]
+        for i, classification in enumerate(predictions):
+            if classification[0] > 0.99:
+                token_to_add = featurizer.get_all_tokens()[i]
+                to_add_start, to_add_height = token_to_add['start_x'], token_to_add['line_height']
+                if len(sequences[-1]) > 0 and (to_add_start - sequences[-1][-1]['end_x']) <= 1.5 * to_add_height:
+                    sequences[-1].append(token_to_add)
+                else:
+                    sequences.append([token_to_add])
+            elif len(sequences[-1]) > 0:
+                sequences.append([])
+        companies = [' '.join([ss['word'] for ss in s]) for s in sequences if len(s) > 1]
+        print(companies)
+
+
+class BERT_NER(ModelTrainer):
+    def train(self):
+        pass
+
+    def evaluate(self):
+        # cross validation accuracy
+        pass
+
+    def predict(self, testdata):
+        self.labels_dict = self.data_args['task'].labels_dict
+        self.cat_dict = self.data_args['task'].cat_dict
+        self.num_labels = self.training_args['num_labels']
+
+        model_file_or_path = self.training_args['model_file_or_path']
+        
+        gpu = self.training_args['gpu']
+        if isinstance(testdata, pd.DataFrame): 
+            # testdata is single dataframe as data is generated using goldens csv
+            logging.info("inferring BERT classifier for single df generated from goldens csv of size {}".format(testdata.shape))
+            return get_classifier_inference(model_file_or_path, testdata, self.num_labels, gpu)
+        elif isinstance(testdata, dict):
+            # test_data is a dictionary {'filename' : dataframe}
+            results = {}
+            for key in testdata:
+                logging.info("inferring BERT classifier for file {}".format(key))
+                results[key] = get_classifier_inference(model_file_or_path, testdata[key], self.num_labels, gpu)
+            
+            return results
+    
+    def analyze_golden_result(self, results):
+        labels = [x for x in range(self.num_labels - 1)] # Not to include 'None' class since it is never in true_label
+        true_labels = results['label']
+        predictions = results['predicted']
+
+        # Overall Score
+        micro_precision = precision_score(true_labels, predictions, labels=labels, average="micro")
+        micro_recall = recall_score(true_labels, predictions,  labels=labels, average="micro")
+        micro_f1 = f1_score(true_labels, predictions, labels=labels, average="micro")
+        logging.info('Micro Test R: {0:0.4f}, P: {1:0.4f}, F1: {2:0.4f}'.format(micro_recall, micro_precision, micro_f1))
+
+        macro_precision = precision_score(true_labels, predictions, labels=labels, average="macro")
+        macro_recall = recall_score(true_labels, predictions, labels=labels, average="macro")
+        macro_f1 = f1_score(true_labels, predictions, labels=labels, average="macro")
+        logging.info('Macro Test R: {0:0.4f}, P: {1:0.4f}, F1: {2:0.4f}'.format(macro_recall, macro_precision, macro_f1))
+
+        # Class Wise Score
+        for lab in labels:
+            # micro vs macro doesn't matter in case of single-label
+            precision = precision_score(true_labels, predictions, labels=[lab], average="micro")
+            recall = recall_score(true_labels, predictions,  labels=[lab], average="micro")
+            f1 = f1_score(true_labels, predictions, labels=[lab], average="micro")
+            logging.info('Category: {0}, Test R: {1:0.4f}, P: {2:0.4f}, F1: {3:0.4f}'.format(self.cat_dict[lab], recall, precision, f1))
+    
+    def analyze_result(self, results):
+        # results is a list of dataframes (one for each file) -- BERT's outputs
+        person_recall = []
+        person_precision = []
+        org_recall = []
+        org_precision = []
+
+        final_results = {}
+        final_results['person'] = {}
+        final_results['org'] = {}
+
+        for key in results:
+            bert_results = results[key]
+            bert_results['predicted'] = bert_results['predicted'].astype(int)
+            bert_person_df = bert_results[bert_results['predicted'] == self.labels_dict['person']]
+            bert_org_df = bert_results[bert_results['predicted'] == self.labels_dict['org']]
+            
+            retrieved_person = bert_person_df['context'].tolist()
+            retrieved_org = bert_org_df['context'].tolist()
+            relevant_person = self.data_args['dataset'].golden.loc[key, self.data_args['candidates_fields']['person']]
+            relevant_org = self.data_args['dataset'].golden.loc[key, self.data_args['candidates_fields']['org']]
+            
+            # PERSON NAMES
+            retrieved, relevant = Evaluation.get_Retr_Rel_Set(retrieved_person, relevant_person)
+            precision, recall = Evaluation.get_Precision_Recall(retrieved, relevant)
+            person_precision.append(precision)
+            person_recall.append(recall)
+            final_results['person'][key] = retrieved
+
+            # ORG NAMES
+            retrieved, relevant = Evaluation.get_Retr_Rel_Set(retrieved_org, relevant_org)
+            precision, recall = Evaluation.get_Precision_Recall(retrieved, relevant)
+            org_precision.append(precision)
+            org_recall.append(recall)
+            final_results['org'][key] = retrieved
+            
+
+        r = np.mean(person_recall)
+        p = np.mean(person_precision)
+        f1 = 2*p*r/(p + r)
+        logging.info("For field {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format('person', r, p, f1))
+
+        r = np.mean(org_recall)
+        p = np.mean(org_precision)
+        f1 = 2*p*r/(p + r)
+        logging.info("For field {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format('org', r, p, f1))
+        return final_results
+
+    def demo(self, results):
+        # Print results
+        for typ in results:
+            logging.info('Field type: {}'.format(typ))
+            for key in results[typ]:
+                logging.info('filename: {}'.format(key))
+                logging.info(results[typ][key])
+
+class Refiner(ModelTrainer):
+    def analyze_results(self):
+        result_file_path = self.training_args['model_file_or_path']
+        models = ['names_vontell', 'names_token_matcher']
+        spacy_models = ['names_spacy', 'org_spacy']
+
+        # add bert in below list, if precomputed results available from analyze_overall_result()
+        person_name_models = ['names_vontell', 'names_token_matcher', 'names_spacy']
+        org_name_models = ['org_spacy']
+
+        all_recall = {}
+        all_precision = {}
+
+        final_results = {}
+        final_results['person'] = {}
+        final_results['org'] = {}
+
+        f = open(result_file_path)
+        results = json.load(f)
+        for result in results:
+            # one file at a time
+            key = result['absolute_ibocr_path'].split('/')[-1]
+            key = ".".join(key.split('.')[:-1])
+            names = {}
+            phrases = result['refined_phrases']
+            for phrase in phrases:
+                # one model/refiner field at a time
+                label = phrase['label']
+                if label in models:
+                    word_list = ast.literal_eval(phrase["word"])
+                    cleaned_word_list = [" ".join(w.split()) for w in word_list]
+
+                elif label in spacy_models:
+                    jsonstr = phrase["word"]
+                    json_dict = json.loads(jsonstr)
+                    entities = json_dict["entities"]
+                    cleaned_word_list = [" ".join(ent_json['entity'].split()) for ent_json in entities]
+                    # remove all occurences of empty string
+                    cleaned_word_list = list(filter(('').__ne__, cleaned_word_list))
+
+
+                names[label] = cleaned_word_list
+        
+            relevant_person = self.data_args['dataset'].golden.loc[key, self.data_args['candidates_fields']['person']]
+            relevant_org = self.data_args['dataset'].golden.loc[key, self.data_args['candidates_fields']['org']]
+
+            # PERSON NAMES
+            for model in person_name_models:
+                retrieved, relevant = Evaluation.get_Retr_Rel_Set(names[model], relevant_person)
+                precision, recall = Evaluation.get_Precision_Recall(retrieved, relevant)
+                
+                if model in final_results['person']:
+                    final_results['person'][model][key] = retrieved
+                else:
+                    final_results['person'][model] = {}
+
+                if model in all_recall:
+                    all_recall[model].append(recall)
+                    all_precision[model].append(precision)
+                else:
+                    all_recall[model] = [recall]
+                    all_precision[model] = [precision]    
+            
+            
+            # ORG NAMES
+            for model in org_name_models:
+                retrieved, relevant = Evaluation.get_Retr_Rel_Set(names[model], relevant_org)
+                precision, recall = Evaluation.get_Precision_Recall(retrieved, relevant)
+                        
+                if model in final_results['org']:
+                    final_results['org'][model][key] = retrieved
+                else:
+                    final_results['org'][model] = {}
+
+                if model in all_recall:
+                    all_recall[model].append(recall)
+                    all_precision[model].append(precision)
+                else:
+                    all_recall[model] = [recall]
+                    all_precision[model] = [precision]    
+
+        Evaluation.print_scores(all_recall, all_precision, person_name_models, org_name_models)
+        return final_results
+    
+    def demo(self, results):
+        # Print results
+        for typ in results:
+            print('Field type: ', typ)
+            for model in results[typ]:
+                print('model type: ', model)
+                for key in results[typ][model]:
+                    print('filename: ', key)
+                    print(results[typ][model][key])
+        
 
 class FeatureEngineering():
     @staticmethod
@@ -516,13 +886,9 @@ class FeatureEngineering_MLP(FeatureEngineering):
         X_train, X_test, y_train, y_test = sklearn.model_selection.train_test_split(filtered_samples, filtered_targets, test_size=0.3, random_state=0)
         return (X_train, X_test, y_train, y_test)
 
-class ModelEvaluator():
-    def __init__(self, training_args):
-        self.labels_dict = training_args['task'].labels_dict
-        self.cat_dict = training_args['task'].cat_dict
-        self.training_args = training_args
-
-    def get_Retr_Rel_Set(self, retrieved, relevant):
+class Evaluation():
+    @staticmethod
+    def get_Retr_Rel_Set(retrieved, relevant):
         if isinstance(retrieved, list):
             retrieved_set = set(retrieved) # model (recommendations)
         elif isinstance(retrieved, str):
@@ -541,7 +907,8 @@ class ModelEvaluator():
             
         return retrieved_set, relevant_set
 
-    def get_Precision_Recall(self, retrieved, relevant):
+    @staticmethod
+    def get_Precision_Recall(retrieved, relevant):
         clean_retrieved = set([StringProcessing.clean_string(r) for r in retrieved])        
         clean_relevant = set([StringProcessing.clean_string(r) for r in relevant])
         
@@ -560,96 +927,8 @@ class ModelEvaluator():
         
         return precision, recall
 
-    def run_evaluation(self, testdata):
-        model_file_or_path = self.training_args['model_file_or_path']
-        self.num_labels = self.training_args['num_labels']
-        gpu = self.training_args['gpu']
-        if self.training_args['use_goldens']: 
-            # testdata is single dataframe as data is generated using goldens csv
-            logging.info("inferring BERT classifier for single df generated from goldens csv of size {}".format(testdata.shape))
-            logging.info("Make sure training_args.use_goldens is set to True")
-            return get_classifier_inference(model_file_or_path, testdata, self.num_labels, gpu)
-        else:
-            # test_data is a dictionary {'filename' : dataframe}
-            results = {}
-            for key in testdata:
-                logging.info("inferring BERT classifier for file {}".format(key))
-                results[key] = get_classifier_inference(model_file_or_path, testdata[key], self.num_labels, gpu)
-            return results
-
-    def analyze_golden_result(self, results):
-        labels = [x for x in range(self.num_labels - 1)] # Not to include 'None' class since it is never in true_label
-        true_labels = results['label']
-        predictions = results['predicted']
-
-        # Overall Score
-        micro_precision = precision_score(true_labels, predictions, labels=labels, average="micro")
-        micro_recall = recall_score(true_labels, predictions,  labels=labels, average="micro")
-        micro_f1 = f1_score(true_labels, predictions, labels=labels, average="micro")
-        logging.info('Micro Test R: {0:0.4f}, P: {1:0.4f}, F1: {2:0.4f}'.format(micro_recall, micro_precision, micro_f1))
-
-        macro_precision = precision_score(true_labels, predictions, labels=labels, average="macro")
-        macro_recall = recall_score(true_labels, predictions, labels=labels, average="macro")
-        macro_f1 = f1_score(true_labels, predictions, labels=labels, average="macro")
-        logging.info('Macro Test R: {0:0.4f}, P: {1:0.4f}, F1: {2:0.4f}'.format(macro_recall, macro_precision, macro_f1))
-
-        # Class Wise Score
-        for lab in labels:
-            # micro vs macro doesn't matter in case of single-label
-            precision = precision_score(true_labels, predictions, labels=[lab], average="micro")
-            recall = recall_score(true_labels, predictions,  labels=[lab], average="micro")
-            f1 = f1_score(true_labels, predictions, labels=[lab], average="micro")
-            logging.info('Category: {0}, Test R: {1:0.4f}, P: {2:0.4f}, F1: {3:0.4f}'.format(self.cat_dict[lab], recall, precision, f1))
-    
-    def analyze_overall_result(self, results, goldens, candidates_fields):
-        # results is a list of dataframes (one for each file) -- BERT's outputs
-        person_recall = []
-        person_precision = []
-        org_recall = []
-        org_precision = []
-
-        final_results = {}
-        final_results['person'] = {}
-        final_results['org'] = {}
-
-        for key in results:
-            bert_results = results[key]
-            bert_results['predicted'] = bert_results['predicted'].astype(int)
-            bert_person_df = bert_results[bert_results['predicted'] == self.labels_dict['person']]
-            bert_org_df = bert_results[bert_results['predicted'] == self.labels_dict['org']]
-            
-            retrieved_person = bert_person_df['context'].tolist()
-            retrieved_org = bert_org_df['context'].tolist()
-            relevant_person = goldens.loc[key, candidates_fields['person']]
-            relevant_org = goldens.loc[key, candidates_fields['org']]
-            
-            # PERSON NAMES
-            retrieved, relevant = self.get_Retr_Rel_Set(retrieved_person, relevant_person)
-            precision, recall = self.get_Precision_Recall(retrieved, relevant)
-            person_precision.append(precision)
-            person_recall.append(recall)
-            final_results['person'][key] = retrieved
-
-            # ORG NAMES
-            retrieved, relevant = self.get_Retr_Rel_Set(retrieved_org, relevant_org)
-            precision, recall = self.get_Precision_Recall(retrieved, relevant)
-            org_precision.append(precision)
-            org_recall.append(recall)
-            final_results['org'][key] = retrieved
-            
-
-        r = np.mean(person_recall)
-        p = np.mean(person_precision)
-        f1 = 2*p*r/(p + r)
-        logging.info("For field {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format('person', r, p, f1))
-
-        r = np.mean(org_recall)
-        p = np.mean(org_precision)
-        f1 = 2*p*r/(p + r)
-        logging.info("For field {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format('org', r, p, f1))
-        return final_results
-
-    def print_scores(self, all_recall, all_precision, person_name_models, org_name_models):
+    @staticmethod
+    def print_scores(all_recall, all_precision, person_name_models, org_name_models):
         logging.info("\nPerson Name Scores")
         for model in person_name_models:
             r = np.mean(all_recall[model])
@@ -664,88 +943,7 @@ class ModelEvaluator():
             f1 = 2*p*r/(p + r)
             logging.info("For model {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format(model, r, p, f1))
 
-    def analyze_refiner_results(self, result_file_path, goldens, candidates_fields):
-        models = ['names_vontell', 'names_token_matcher']
-        spacy_models = ['names_spacy', 'org_spacy']
 
-        # add bert in below list, if precomputed results available from analyze_overall_result()
-        person_name_models = ['names_vontell', 'names_token_matcher', 'names_spacy']
-        org_name_models = ['org_spacy']
-
-        all_recall = {}
-        all_precision = {}
-
-        final_results = {}
-        final_results['person'] = {}
-        final_results['org'] = {}
-
-        f = open(result_file_path)
-        results = json.load(f)
-        for result in results:
-            # one file at a time
-            key = result['absolute_ibocr_path'].split('/')[-1]
-            key = ".".join(key.split('.')[:-1])
-            names = {}
-            phrases = result['refined_phrases']
-            for phrase in phrases:
-                # one model/refiner field at a time
-                label = phrase['label']
-                if label in models:
-                    word_list = ast.literal_eval(phrase["word"])
-                    cleaned_word_list = [" ".join(w.split()) for w in word_list]
-
-                elif label in spacy_models:
-                    jsonstr = phrase["word"]
-                    json_dict = json.loads(jsonstr)
-                    entities = json_dict["entities"]
-                    cleaned_word_list = [" ".join(ent_json['entity'].split()) for ent_json in entities]
-                    # remove all occurences of empty string
-                    cleaned_word_list = list(filter(('').__ne__, cleaned_word_list))
-
-
-                names[label] = cleaned_word_list
-        
-            relevant_person = goldens.loc[key, candidates_fields['person']]
-            relevant_org = goldens.loc[key, candidates_fields['org']]
-
-            # PERSON NAMES
-            for model in person_name_models:
-                retrieved, relevant = self.get_Retr_Rel_Set(names[model], relevant_person)
-                precision, recall = self.get_Precision_Recall(retrieved, relevant)
-                
-                if model in final_results['person']:
-                    final_results['person'][model][key] = retrieved
-                else:
-                    final_results['person'][model] = {}
-
-                if model in all_recall:
-                    all_recall[model].append(recall)
-                    all_precision[model].append(precision)
-                else:
-                    all_recall[model] = [recall]
-                    all_precision[model] = [precision]    
-            
-            
-            # ORG NAMES
-            for model in org_name_models:
-                retrieved, relevant = self.get_Retr_Rel_Set(names[model], relevant_org)
-                precision, recall = self.get_Precision_Recall(retrieved, relevant)
-                        
-                if model in final_results['org']:
-                    final_results['org'][model][key] = retrieved
-                else:
-                    final_results['org'][model] = {}
-
-                if model in all_recall:
-                    all_recall[model].append(recall)
-                    all_precision[model].append(precision)
-                else:
-                    all_recall[model] = [recall]
-                    all_precision[model] = [precision]    
-
-        self.print_scores(all_recall, all_precision, person_name_models, org_name_models)
-        return final_results
-    
 class OCRUtils:
     @staticmethod
     def get_polys_within_range(word_polys,
