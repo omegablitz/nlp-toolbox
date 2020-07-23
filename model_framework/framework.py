@@ -17,6 +17,11 @@ import logging
 import itertools
 import difflib
 import random
+import sklearn
+from sklearn.linear_model import LogisticRegression
+from sklearn import metrics
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import classification_report
 
 # Point to instabase SDK, use SDK to download. We only need this for development, can remove this later 
 # ToDo: This is fine for now, but we should make it so that this is an ENV variable (or eventually an actual pip dependency)
@@ -30,6 +35,14 @@ from instabase_sdk import Instabase
 PUNC_TABLE = str.maketrans({key: None for key in string.punctuation})
 
 from infer_bert_classifier import get_classifier_inference
+from bert_utils import update_bert_embeddings
+from rule_features import rules
+from preprocessing import preprocessing_rules
+
+import keras
+from keras.models import Sequential
+from keras.layers import Dense, Dropout
+import matplotlib.pyplot as plt
 
 # Import instabase. We only need this for development, can remove this later 
 # ToDo: This is fine for now, but we should make it so that this is an ENV variable (or eventually an actual pip dependency)
@@ -48,6 +61,10 @@ class DatasetWarning():
         return 'Warning[{}, {}]'.format(self.warning_type, self.message)
 
 class Task():
+     def __init__(self, config):
+        self.config = config
+
+class Task_NER():
     def __init__(self, config):
         self.config = config
         self.set_labels_dict()
@@ -55,7 +72,6 @@ class Task():
     def set_labels_dict(self):
         self.labels_dict = self.config['labels_dict']
         self.cat_dict = {v: k for k, v in self.labels_dict.items()}
-
 
 class StringProcessing():
     @staticmethod
@@ -88,10 +104,14 @@ class StringProcessing():
         result = result.lower().strip()
         return result
 
+    @staticmethod
+    def clean_token(token):
+        return token.lower().translate(PUNC_TABLE)
+
 class IbocrTextProcessing():
     @staticmethod
     def process_IBOCR_to_txt(all_data_dirs, dataset_config):
-        #ToDo: check reading from ib
+        #ToDo: check reading from ib, and for ibdoc
         texts = {}
         for data_dir in all_data_dirs:
             files = os.listdir(data_dir)
@@ -133,7 +153,7 @@ class IbocrTextProcessing():
 
     @staticmethod
     def process_IBOCR_to_candidate_phrases(all_data_dirs, dataset_config, processing_config):
-        #ToDo: check reading from ib
+        #ToDo: check reading from ib, and for ibdoc
 
         candidates = {}
         # ToDo: Eventually (or now, not sure) we would also want to cluster based on Y distance. 
@@ -166,82 +186,95 @@ class IbocrTextProcessing():
 
 class DataCuration():
 
-  def __init__(self, access_token, dataset_config, goldens_config):
-    # ToDo: Ideally, we should make this configurable, since sometimes we will want instabase.com, dogfood, a custom URL at a customer site, etc.
-    self.ib = Instabase('https://instabase.com', access_token)
-    self.dataset_config = dataset_config
-    self.golden_config = goldens_config
+    def __init__(self, access_token, dataset_config, goldens_config):
+        # ToDo: Ideally, we should make this configurable, since sometimes we will want instabase.com, dogfood, a custom URL at a customer site, etc.
+        self.ib = Instabase('https://instabase.com', access_token)
+        self.dataset_config = dataset_config
+        self.golden_config = goldens_config
 
-    dataset_paths = dataset_config['path']
-    goldens_paths = goldens_config['path']
+        dataset_paths = dataset_config['path']
+        goldens_paths = goldens_config['path']
 
-    if type(dataset_paths) != list:
-      dataset_paths = [dataset_paths]
+        if type(dataset_paths) != list:
+            dataset_paths = [dataset_paths]
 
-    if type(goldens_paths) != list:
-      goldens_paths = [goldens_paths]
+        if type(goldens_paths) != list:
+            goldens_paths = [goldens_paths]
 
-    self.datadir = dataset_paths
-    self._load_ib_dataset(dataset_paths, dataset_config)
-    self._load_goldens(goldens_paths, goldens_config)
+        self.datadir = dataset_paths
+        self._load_ib_dataset(dataset_paths, dataset_config)
+        self._load_goldens(goldens_paths, goldens_config)
 
-    if dataset_config['convert2txt']:
-        self.texts = IbocrTextProcessing.process_IBOCR_to_txt(dataset_paths, dataset_config)
+        if dataset_config['convert2txt']:
+            self.texts = IbocrTextProcessing.process_IBOCR_to_txt(dataset_paths, dataset_config)
 
-  def _load_goldens(self, goldens_paths, goldens_config):
-    goldens_type = goldens_config.get('file_type')
-    for goldens_path in goldens_paths:
-      logging.info('Loading goldens from {}'.format(goldens_path))
-      if goldens_type == 'csv':
-        golden_all_df = pd.read_csv(goldens_path)
-        self.golden_all = golden_all_df.set_index(goldens_config['index_field_name'])
+    def get_file_objects(self, dataset_path, read_from_local):
+        file_objects = []
+        if read_from_local is False:
+                file_result = self.ib.list_dir(dataset_path)
+                files = [node['full_path'] for node in file_result['nodes']]
+                for file in files:
+                    file_objects.append(self.ib.read_file(file))
+        else:
+            files = os.listdir(dataset_path)
+            for file in files:
+                with open(os.path.join(dataset_path, file)) as f:
+                    file_objects.append(f.read())
+        
+        return files, file_objects
 
-        # filter goldens by presence in dataset
-        def ispresent(row):
-            if row in self.dataset:
-                return True
-            return False
-        golden_all_df['in_src'] = golden_all_df[goldens_config['index_field_name']].apply(ispresent)
-        golden_df = golden_all_df[golden_all_df['in_src'] == True]
-        golden_df = golden_df.drop('in_src', axis=1)
-        self.golden = golden_df.set_index(goldens_config['index_field_name'])
+    def _load_goldens(self, goldens_paths, goldens_config):
+        goldens_type = goldens_config.get('file_type')
+        for goldens_path in goldens_paths:
+            logging.info('Loading goldens from {}'.format(goldens_path))
+            if goldens_type == 'csv':
+                golden_all_df = pd.read_csv(goldens_path)
+                self.golden_all = golden_all_df.set_index(goldens_config['index_field_name'])
 
-        logging.info('Total files Goldens: {}'.format(self.golden_all.shape))
-        logging.info('Total files found in the source: {}'.format(self.golden.shape))
+                # filter goldens by presence in dataset
+                def ispresent(row):
+                    if row in self.dataset:
+                        return True
+                    return False
+                golden_all_df['in_src'] = golden_all_df[goldens_config['index_field_name']].apply(ispresent)
+                golden_df = golden_all_df[golden_all_df['in_src'] == True]
+                golden_df = golden_df.drop('in_src', axis=1)
+                self.golden = golden_df.set_index(goldens_config['index_field_name'])
 
-  def _load_ib_dataset(self, dataset_paths, dataset_config):
-    self.dataset = {}
-    for dataset_path in dataset_paths:
-      logging.info('Loading dataset from {}'.format(dataset_path))
-      if dataset_config['is_local'] is False:
-          file_result = self.ib.list_dir(dataset_path)
-          files = [node['full_path'] for node in file_result['nodes']]
-          file_objects = []
-          for file in files:
-              with open(file) as f:
-                file_objects.append(self.ib.read_file(f))
-      else:
-          files = os.listdir(dataset_path)
-          file_objects = []
-          for file in files:
-              with open(os.path.join(dataset_path, file)) as f:
-                file_objects.append(f.read())
+                if len(list(self.golden.index)) != len(set(self.golden.index)):
+                    logging.info("Goldens have non-unique filenames, keeping only the first values")
+                    self.golden = self.golden.loc[~self.golden.index.duplicated(keep='first')]
 
-      for file, file_object in zip(files, file_objects):
-        content = None
-        identifier = file
-        if dataset_config.get('file_type') in ['ibdoc', 'ibocr']:
-          ibocr, err = ParsedIBOCRBuilder.load_from_str(os.path.join(dataset_path, file), file_object)
-          content = ibocr.as_parsed_ibocr()
-        if dataset_config.get('identifier'):
-          identifier = dataset_config.get('identifier')(file)
-        self.dataset.update({identifier: content})
+                logging.info('Total files Goldens: {}'.format(self.golden_all.shape))
+                logging.info('Total files found in the source with unique index: {}'.format(self.golden.shape))
 
-  def generate_candidates_phrases(self, processing_config):
-      self.candidates = IbocrTextProcessing.process_IBOCR_to_candidate_phrases(self.datadir, self.dataset_config, processing_config)
-      self.processing_config = processing_config
+    def _load_ib_dataset(self, dataset_paths, dataset_config):
+        self.dataset = {}
+        files = []
+        file_objects = []
 
-  def compare_candidates_and_goldens(self, candidates_fields):
+        for dataset_path in dataset_paths:
+            logging.info('Loading dataset from {}'.format(dataset_path))
+            this_files, this_file_objects = self.get_file_objects(dataset_path, read_from_local=dataset_config['is_local'])
+            files.extend(this_files)
+            file_objects.extend(this_file_objects)
+            logging.info("{} files loaded".format(len(files)))
+
+        for file, file_object in zip(files, file_objects):
+            content = None
+            identifier = file
+            if dataset_config.get('file_type') in ['ibdoc', 'ibocr']:
+                ibocr, err = ParsedIBOCRBuilder.load_from_str(os.path.join(dataset_path, file), file_object)
+                content = ibocr.as_parsed_ibocr()
+                if dataset_config.get('identifier'):
+                    identifier = dataset_config.get('identifier')(file)
+                    self.dataset.update({identifier: content})
+
+    def generate_candidates_phrases(self, processing_config):
+        self.candidates = IbocrTextProcessing.process_IBOCR_to_candidate_phrases(self.datadir, self.dataset_config, processing_config)
+        self.processing_config = processing_config
+
+    def compare_candidates_and_goldens(self, candidates_fields):
         # goldens may have more keys than dataset
         filenames = []
         person_found = 0
@@ -279,11 +312,151 @@ class DataCuration():
         logging.info("total files: {0}\nperson names found in candidates: {1}\norg names found in candidates: {2}\n".format(total_files, len(person_found_files), len(org_found_files)))
     
 
+    def generate_spatial_samples(self, field_to_capture, data_config):
+        """
+        Generates samples to train a model on, based on contextual information
+        surrounding a token.
+        """
+        
+        samples = []
+        targets = []
+        warnings = []
+
+        for sample_name in list(self.golden.index):
+            if sample_name not in self.dataset:
+                warnings.append(DatasetWarning('SampleNotFound', 'Golden file "{}" not found in dataset'.format(sample_name)))
+                continue
+                
+            ibdoc = self.dataset[sample_name].get_joined_page()[0]
+            featurizer = IBDOCFeaturizer(ibdoc)
+            
+            expected_field = self.golden.at[sample_name, field_to_capture]
+
+            if isinstance(expected_field, str):
+                if len(expected_field.strip()) == 0:
+                    warnings.append(DatasetWarning('FieldEmpty', 'Golden file "{}" has no entry for "{}"'.format(sample_name, field_to_capture)))
+                    continue
+            else:
+                # expected_fiels may contain NaN
+                warnings.append(DatasetWarning('FieldEmpty', 'Golden file "{}" has no entry for "{}"'.format(sample_name, field_to_capture)))
+                continue
+
+            # First, collect a number of samples relevant for the task
+            expected_tokens = [StringProcessing.clean_token(w) for w in expected_field.split()]
+            expected = ' '.join(expected_tokens)
+            all_tokens = featurizer.get_all_tokens()
+            found_indices = set()
+            for i in range(len(all_tokens) - len(expected_tokens)):
+                token_range = all_tokens[i:i+len(expected_tokens)]
+                tokens_to_compare = [StringProcessing.clean_token(w['word']) for w in token_range]
+                if ' '.join(tokens_to_compare) == expected:
+                    for idx in range(i, i+len(expected_tokens)):
+                        found_indices.add(idx)
+            if not found_indices:
+                warnings.append(DatasetWarning('TargetNotFound', 'Not able to locate field "{}" in file "{}"'.format(field_to_capture, sample_name)))
+                continue
+
+            # Collect negative examples
+            if not data_config['balance_targets']:
+                print("NOT BALANCING TARGETS")
+                fvs = featurizer.get_feature_vectors(data_config)
+                for idx in range(len(fvs)):
+                    samples.append(fvs[idx])
+                    targets.append(1 if idx in found_indices else 0)
+            else:
+                negative_examples = list(set(range(len(featurizer.get_all_tokens()))) - found_indices)
+                selected_negative_examples = np.random.choice(negative_examples, len(found_indices), replace=False)
+                fvs = []
+                for idx in (list(found_indices) + list(selected_negative_examples)):
+                    fv = featurizer.get_token_feature_vector(idx, data_config)
+                    samples.append(fv)
+                    targets.append(1 if idx in found_indices else 0)
+
+
+        return (np.array(samples), np.array(targets), warnings)
+
+
+class EmbeddingCache:
+    def __init__(self):
+        # Model cache
+        self.glove_model = None
+        self.bert_model = None
+
+        # Result cache
+        self.glove = {}
+        self.bert = {}
+
+# Cache for word embeddings
+EMBEDDING_CACHE = EmbeddingCache()
+
+class ModelTrainer():
+    def __init__(self, training_args):
+        self.training_args = training_args
+
+class MLP(ModelTrainer):
+    def train(self, X_train, X_test, y_train, y_test):
+        # Neural network
+        model = Sequential()
+        model.add(Dense(512, input_dim=X_train.shape[1], activation='relu'))
+        model.add(Dropout(0.5))
+        model.add(Dense(128, activation='relu'))
+        model.add(Dropout(0.5))
+        model.add(Dense(1, activation='sigmoid'))
+        model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+        logging.info('Training multilayer perceptron model for {} samples'.format(X_train.shape[0]))
+        history = model.fit(X_train, y_train, validation_data=(X_test, y_test), 
+            epochs=self.training_args['epochs'], batch_size=self.training_args['batch_size'])
+
+        self.model = model
+        self.history = history
+
+    def evaluate(self):
+        logging.info(self.history.history.keys())
+        plt.plot(self.history.history['accuracy'])
+        plt.plot(self.history.history['val_accuracy'])
+        plt.title('Model accuracy')
+        plt.ylabel('Accuracy')
+        plt.xlabel('Epoch')
+        plt.legend(['Train', 'Test'], loc='upper left')
+        plt.show()
+
+        plt.plot(self.history.history['loss'])
+        plt.plot(self.history.history['val_loss']) 
+        plt.title('Model loss') 
+        plt.ylabel('Loss') 
+        plt.xlabel('Epoch') 
+        plt.legend(['Train', 'Test'], loc='upper left') 
+        plt.show()
+        return self.history.history['val_accuracy'][-1]
+
+
 class FeatureEngineering():
-    def __init__(self, usecase, data_curation, candidates_fields):
-        self.labels_dict = usecase.labels_dict
-        self.data = data_curation
-        self.candidates_fields = candidates_fields
+    @staticmethod
+    def product_dict(**kwargs):
+        keys = kwargs.keys()
+        vals = kwargs.values()
+        for instance in itertools.product(*vals):
+            yield dict(zip(keys, instance))
+
+    @staticmethod
+    def dist(point1, point2):
+        x1, y1 = point1
+        x2, y2 = point2
+        return math.sqrt((x1 - x2)**2 + (y1 - y2)**2)
+
+    @staticmethod
+    def get_subset_for_debugging(data_object, sample_size=10):
+        if isinstance(data_object, dict):
+            return dict(random.sample(data_object.items(), sample_size))
+        elif isinstance(data_object, pd.DataFrame):
+            return data_object.sample(n=sample_size)
+
+
+class FeatureEngineering_NER(FeatureEngineering):
+    def __init__(self, data_args):
+        self.labels_dict = data_args['task'].labels_dict
+        self.data = data_args['dataset']
+        self.candidates_fields = data_args['candidates_fields']
 
     def generate_test_samples_from_goldens(self):
         labels = []
@@ -318,21 +491,36 @@ class FeatureEngineering():
             test_samples[key] = df
         return test_samples
 
-    @staticmethod
-    def get_subset_for_debugging(data_object, sample_size=10):
-        if isinstance(data_object, dict):
-            return dict(random.sample(data_object.items(), sample_size))
-        elif isinstance(data_object, pd.DataFrame):
-            return data_object.sample(n=sample_size)
+
+class FeatureEngineering_MLP(FeatureEngineering):
+    def __init__(self, data_args):
+        self.task = data_args['task']
+        self.data = data_args['dataset']
+        self.data_config = data_args['data_config']
+
+    def create_train_test_data(self):
+        # Balance samples by removing some non-entity labeled datapoints
+        samples, targets, warnings = self.data.generate_spatial_samples('employer_name', self.data_config)
+        pos_idx = np.where(targets == 1)[0]
+        num_pos_samples = len(pos_idx)
+
+        neg_idxs_all = np.where(targets == 0)[0]
+        np.random.shuffle(neg_idxs_all)
+        neg_idx = neg_idxs_all[:num_pos_samples]
+
+        idx_to_use = np.concatenate((pos_idx, neg_idx))
+
+        filtered_samples = samples[idx_to_use]
+        filtered_targets = targets[idx_to_use]
+
+        X_train, X_test, y_train, y_test = sklearn.model_selection.train_test_split(filtered_samples, filtered_targets, test_size=0.3, random_state=0)
+        return (X_train, X_test, y_train, y_test)
 
 class ModelEvaluator():
-    def __init__(self, usecase):
-        self.labels_dict = usecase.labels_dict
-        self.cat_dict = usecase.cat_dict
-
-    def set_config(self, model_config, eval_config):
-        self.model_config = model_config
-        self.eval_config = eval_config
+    def __init__(self, training_args):
+        self.labels_dict = training_args['task'].labels_dict
+        self.cat_dict = training_args['task'].cat_dict
+        self.training_args = training_args
 
     def get_Retr_Rel_Set(self, retrieved, relevant):
         if isinstance(retrieved, list):
@@ -373,13 +561,13 @@ class ModelEvaluator():
         return precision, recall
 
     def run_evaluation(self, testdata):
-        model_file_or_path = self.model_config['model_file_or_path']
-        self.num_labels = self.model_config['num_labels']
-        gpu = self.eval_config['gpu']
-        if self.eval_config['use_goldens']: 
+        model_file_or_path = self.training_args['model_file_or_path']
+        self.num_labels = self.training_args['num_labels']
+        gpu = self.training_args['gpu']
+        if self.training_args['use_goldens']: 
             # testdata is single dataframe as data is generated using goldens csv
             logging.info("inferring BERT classifier for single df generated from goldens csv of size {}".format(testdata.shape))
-            logging.info("Make sure Eval_Config.use_goldens is set to True")
+            logging.info("Make sure training_args.use_goldens is set to True")
             return get_classifier_inference(model_file_or_path, testdata, self.num_labels, gpu)
         else:
             # test_data is a dictionary {'filename' : dataframe}
@@ -557,3 +745,213 @@ class ModelEvaluator():
 
         self.print_scores(all_recall, all_precision, person_name_models, org_name_models)
         return final_results
+    
+class OCRUtils:
+    @staticmethod
+    def get_polys_within_range(word_polys,
+                                min_x=float('-inf'),
+                                max_x=float('inf'),
+                                min_y=float('-inf'),
+                                max_y=float('inf'),
+                                entirely_contained=False):
+        in_range = []
+        # Make this faster with binary search
+        for word in word_polys:
+            start_x, start_y = word['start_x'], word['start_y']
+            end_x, end_y = word['end_x'], word['end_y']
+            should_include = True
+            if entirely_contained:
+                should_include = min_x >= start_x <= max_x and min_x >= end_x <= max_x and min_y >= start_y <= max_y and min_y >= end_y <= max_y
+            else:
+                # If one rectangle is on left side of other
+                if (min_x >= end_x or start_x >= max_x):
+                    should_include = False
+                # If one rectangle is above other
+                elif (min_y >= end_y or start_y >= max_y):
+                    should_include = False
+                else:
+                    should_include = True
+            if should_include:
+                in_range.append(word)
+        return in_range
+
+    @staticmethod
+    def get_polys_in_direction(direction, word, word_polys):
+        results = []
+        if direction == 'above':
+            results = OCRUtils.get_polys_within_range(word_polys,
+                                                    min_x=word['start_x'],
+                                                    max_x=word['end_x'],
+                                                    max_y=word['start_y'])
+        if direction == 'below':
+            results = OCRUtils.get_polys_within_range(word_polys,
+                                                    min_x=word['start_x'],
+                                                    max_x=word['end_x'],
+                                                    min_y=word['end_y'])
+        if direction == 'left':
+            results = OCRUtils.get_polys_within_range(word_polys,
+                                                    max_x=word['start_x'],
+                                                    min_y=word['start_y'],
+                                                    max_y=word['end_y'])
+        if direction == 'right':
+            results = OCRUtils.get_polys_within_range(word_polys,
+                                                    min_x=word['end_x'],
+                                                    min_y=word['start_y'],
+                                                    max_y=word['end_y'])
+        if direction == 'above left':
+            results = OCRUtils.get_polys_within_range(word_polys,
+                                                    max_x=word['start_x'],
+                                                    max_y=word['start_y'])
+        if direction == 'above right':
+            results = OCRUtils.get_polys_within_range(word_polys,
+                                                    min_x=word['end_x'],
+                                                    max_y=word['start_y'])
+        if direction == 'below right':
+            results = OCRUtils.get_polys_within_range(word_polys,
+                                                    min_x=word['end_x'],
+                                                    min_y=word['end_y'])
+        if direction == 'below left':
+            results = OCRUtils.get_polys_within_range(word_polys,
+                                                    max_x=word['start_x'],
+                                                    min_y=word['end_y'])
+        if word in results:
+            results.remove(word)
+        return results
+
+    @staticmethod
+    def get_distance_between(word1, word2):
+        (x1, y1, x1b,
+        y1b) = word1['start_x'], word1['start_y'], word1['end_x'], word1['end_y']
+        (x2, y2, x2b,
+        y2b) = word2['start_x'], word2['start_y'], word2['end_x'], word2['end_y']
+        left = x2b < x1
+        right = x1b < x2
+        bottom = y2b < y1
+        top = y1b < y2
+        if top and left:
+            return FeatureEngineering.dist((x1, y1b), (x2b, y2))
+        elif left and bottom:
+            return FeatureEngineering.dist((x1, y1), (x2b, y2b))
+        elif bottom and right:
+            return FeatureEngineering.dist((x1b, y1), (x2, y2b))
+        elif right and top:
+            return FeatureEngineering.dist((x1b, y1b), (x2, y2))
+        elif left:
+            return x1 - x2b
+        elif right:
+            return x2 - x1b
+        elif bottom:
+            return y1 - y2b
+        elif top:
+            return y2 - y1b
+        else:  # rectangles intersect
+            return 0
+
+    @staticmethod
+    def get_tokens_that_match(text, word_polys):
+        pass
+
+class IBDOCFeaturizer:
+
+    DIRS = [
+        'left', 'above left', 'above', 'above right', 'right', 'below right',
+        'below', 'below left'
+    ]
+    DIRS_CARDINAL = [
+        'left', 'above', 'right', 'below'
+    ]
+
+    def __init__(self, ibdoc):
+        self.ibdoc = ibdoc
+        self.CACHED_ALL_TOKENS = None
+        self.CACHED_EMBEDDINGS = None
+
+    def get_all_tokens(self):
+        if self.CACHED_ALL_TOKENS is None:
+            self.CACHED_ALL_TOKENS = []
+        for line in self.ibdoc.get_lines():
+            for word in line:
+                self.CACHED_ALL_TOKENS.append(word)
+        return self.CACHED_ALL_TOKENS
+
+    def get_bert_embedding(self, text):
+        global EMBEDDING_CACHE
+        text = re.sub('\d', '9', text)
+        all_words = [text]
+        update_bert_embeddings(all_words, EMBEDDING_CACHE)
+        return EMBEDDING_CACHE.bert[text]
+
+    def get_glove_embeddings(self):
+        global EMBEDDING_CACHE
+        all_words = [w['word'] for w in self.get_all_tokens()]
+
+    def _apply_preprocessing(self, word, data_config):
+        final_word = word
+        for preprocess in data_config['pre_processing']:
+            if type(preprocess) == str:
+                if preprocess in preprocessing_rules:
+                    final_word = preprocessing_rules[preprocess](final_word)
+        return final_word
+
+    def get_token_feature_vector(self, idx, data_config):
+
+        num_directional_neighbors = data_config['max_num_tokens']
+        directions = self.DIRS_CARDINAL if data_config['cardinal_only'] else self.DIRS
+
+        pieces = []
+
+        # First attach a feature vector for this word itself
+        current_token = self.get_all_tokens()[idx]
+        pieces.append(self.get_bert_embedding(self._apply_preprocessing(current_token['word'], data_config)))
+
+        # Attach surrounding contexts
+        surrounding_context = self.get_surrounding_context(
+            idx, data_config)
+        for direction in directions:
+            for i in range(num_directional_neighbors):
+                if i >= len(surrounding_context[direction]):
+                    pieces.append(np.zeros((768, )))
+                else:
+                    word = surrounding_context[direction][i]
+                    pieces.append(self.get_bert_embedding(self._apply_preprocessing(word['word'], data_config)))
+
+        # Attach rule-based features
+        # TODO
+        for rule in data_config['additional_features']:
+            if type(rule) == str:
+                if rule in rules:
+                    # print("Appending {} rule".format(rule))
+                    pieces.append([rules[rule](current_token)])
+
+        return np.concatenate(pieces)
+
+    def get_surrounding_context(self, token_idx, data_config):
+        current_token = self.get_all_tokens()[token_idx]
+        context = {}
+        directions = self.DIRS_CARDINAL if data_config['cardinal_only'] else self.DIRS
+        for direction in directions:
+            in_direction = OCRUtils.get_polys_in_direction(direction, current_token,
+                                                            self.get_all_tokens())
+
+            # Filter by allowed distance, trim if too far
+            if data_config['max_token_distance'] is not None:
+                filter_fn = lambda word: OCRUtils.get_distance_between(current_token, word) <= data_config['max_token_distance'] * current_token['line_height']
+                in_direction = filter(filter_fn, in_direction)
+            
+            # Sort results by distance, trim off based on max num tokens
+            result = sorted(in_direction,
+                            key=lambda word: OCRUtils.get_distance_between(
+                                current_token, word))[:data_config['max_num_tokens']]
+
+        
+
+            context[direction] = result
+        return context
+
+    def get_feature_vectors(self, data_config):
+
+        results = []
+        for idx in range(len(self.get_all_tokens())):
+            results.append(
+                self.get_token_feature_vector(idx, data_config))
+        return np.array(results)

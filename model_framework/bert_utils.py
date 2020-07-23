@@ -1,9 +1,39 @@
 import torch
+from torch import nn
 from keras.preprocessing.sequence import pad_sequences
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import logging
+from transformers import BertModel, BertTokenizer
+
+
+def update_bert_embeddings(allsentences, EMBEDDING_CACHE):
+	logging.getLogger('transformers').setLevel(logging.WARNING)
+	if EMBEDDING_CACHE.bert_model:
+		model, device, berttokenizer = EMBEDDING_CACHE.bert_model
+	else:
+		logging.info("Building BERT embeddings")
+		device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+		berttokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+		model = BertModel.from_pretrained('bert-base-uncased')
+		model = nn.DataParallel(model)
+		model = model.to(device)
+		EMBEDDING_CACHE.bert_model = (model, device, berttokenizer)
+		logging.info("FINISHED LOADING MODEL")
+
+	for iter, sent in enumerate(allsentences):
+		if sent in EMBEDDING_CACHE.bert:
+			continue
+		logging.debug("[WE] {}".format(sent))
+		bert_tokens_sentence = berttokenizer.encode(sent,
+													add_special_tokens=True)
+		with torch.no_grad():
+			bert_embeddings = \
+				model(torch.tensor([bert_tokens_sentence]).to(device))[0].squeeze(0)
+			f_emb_avg = torch.mean(bert_embeddings, dim=0).cpu().numpy()
+			EMBEDDING_CACHE.bert[sent] = f_emb_avg
+
 
 def convert_sentences_to_bert_inputs(tokenizer, df):
 	df['context'] = df['context'].astype(str)
