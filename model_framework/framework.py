@@ -16,6 +16,7 @@ from torch import nn
 import logging
 import itertools
 import difflib
+import random
 
 # Point to instabase SDK, use SDK to download. We only need this for development, can remove this later 
 # ToDo: This is fine for now, but we should make it so that this is an ENV variable (or eventually an actual pip dependency)
@@ -46,17 +47,10 @@ class DatasetWarning():
     def __repr__(self):
         return 'Warning[{}, {}]'.format(self.warning_type, self.message)
 
-class Usecase():
-    def __init__(self, usecase):
-        self.usecase = usecase
-
-    def set_config(self, config):
+class Task():
+    def __init__(self, config):
         self.config = config
-        self.set_dataset()
         self.set_labels_dict()
-
-    def set_dataset(self):
-      self.dataset = self.config['dataset']
 
     def set_labels_dict(self):
         self.labels_dict = self.config['labels_dict']
@@ -94,14 +88,92 @@ class StringProcessing():
         result = result.lower().strip()
         return result
 
+class IbocrTextProcessing():
+    @staticmethod
+    def process_IBOCR_to_txt(all_data_dirs, dataset_config):
+        #ToDo: check reading from ib
+        texts = {}
+        for data_dir in all_data_dirs:
+            files = os.listdir(data_dir)
+            logging.info("Processing {} IBOCR files to txt".format(len(files)))
+
+            for fname in files:
+                fpath = os.path.join(data_dir, fname)
+                f = open(fpath)
+                file = json.load(f)
+                dictionary = file[0]
+                dictionary.keys()
+                texts_list = dictionary['text']
+                if dataset_config.get('identifier'):
+                    identifier = dataset_config.get('identifier')(fname)
+                texts.update({identifier: texts_list})
+        
+        return texts
+
+    @staticmethod
+    def cluster_based_on_DIST(lines, threshold):
+        words = [[]]
+        for line in lines:
+            for word in line: 
+                start = word['start_x']
+                if not words[-1]:
+                    words[-1].append(word)
+                    continue
+                if start - words[-1][-1]['end_x'] < threshold:
+                    words[-1].append(word)
+                    continue
+                words.append([word])
+            words.append([])
+        
+        phrases = []
+        for cluster in words:
+            phrases.append(' '.join([w['word'] for w in cluster]))
+
+        return phrases
+
+    @staticmethod
+    def process_IBOCR_to_candidate_phrases(all_data_dirs, dataset_config, processing_config):
+        #ToDo: check reading from ib
+
+        candidates = {}
+        # ToDo: Eventually (or now, not sure) we would also want to cluster based on Y distance. 
+        # This clustering approach may be good to separate out into a separate file that has a bunch of "algorithms" for text / IBOCR processing
+        for data_dir in all_data_dirs:
+            files = os.listdir(data_dir)
+            logging.info("Generating candidates for {} files".format(len(files)))
+            for fname in files:
+                fpath = os.path.join(data_dir, fname)
+                f = open(fpath)
+                file = json.load(f)
+                dictionary = file[0]
+                dictionary.keys()
+                lines = dictionary['lines']
+                phrases = IbocrTextProcessing.cluster_based_on_DIST(lines, threshold=processing_config['X_DIST_THRESHOLD'])
+
+                # remove special characters and other filters
+                candidate_list = []
+                for phrase in phrases:
+                    phrase = StringProcessing.find_remove_opening_token(phrase, '"')
+                    if StringProcessing.remove_digits_filter_by_length(phrase, min_len=5):
+                        candidate_list.append(phrase)
+
+                if dataset_config.get('identifier'):
+                    identifier = dataset_config.get('identifier')(fname)
+                candidates.update({identifier: candidate_list})
+        
+        return candidates
+
+
 class DataCuration():
 
-  def __init__(self, access_token, dataset_paths, dataset_config,
-               goldens_paths, goldens_config):
+  def __init__(self, access_token, dataset_config, goldens_config):
     # ToDo: Ideally, we should make this configurable, since sometimes we will want instabase.com, dogfood, a custom URL at a customer site, etc.
     self.ib = Instabase('https://instabase.com', access_token)
     self.dataset_config = dataset_config
     self.golden_config = goldens_config
+
+    dataset_paths = dataset_config['path']
+    goldens_paths = goldens_config['path']
 
     if type(dataset_paths) != list:
       dataset_paths = [dataset_paths]
@@ -112,8 +184,9 @@ class DataCuration():
     self.datadir = dataset_paths
     self._load_ib_dataset(dataset_paths, dataset_config)
     self._load_goldens(goldens_paths, goldens_config)
+
     if dataset_config['convert2txt']:
-        self.process_IBOCR_to_txt(dataset_config)
+        self.texts = IbocrTextProcessing.process_IBOCR_to_txt(dataset_paths, dataset_config)
 
   def _load_goldens(self, goldens_paths, goldens_config):
     goldens_type = goldens_config.get('file_type')
@@ -164,71 +237,11 @@ class DataCuration():
           identifier = dataset_config.get('identifier')(file)
         self.dataset.update({identifier: content})
 
-  def process_IBOCR_to_txt(self, dataset_config):
-    #ToDo: add reading from ib
-    self.texts = {}
-    for data_dir in self.datadir:
-        files = os.listdir(data_dir)
-        logging.info("Processing {} IBOCR files to txt".format(len(files)))
+  def generate_candidates_phrases(self, processing_config):
+      self.candidates = IbocrTextProcessing.process_IBOCR_to_candidate_phrases(self.datadir, self.dataset_config, processing_config)
+      self.processing_config = processing_config
 
-        for fname in files:
-            fpath = os.path.join(data_dir, fname)
-            f = open(fpath)
-            file = json.load(f)
-            dictionary = file[0]
-            dictionary.keys()
-            texts = dictionary['text']
-            if dataset_config.get('identifier'):
-                identifier = dataset_config.get('identifier')(fname)
-            self.texts.update({identifier: texts})
-
-  def process_IBOCR_to_candidate_phrases(self, dataset_config, processing_config):
-    #ToDo: add reading from ib
-
-    self.candidates = {}
-    # ToDo: Eventually (or now, not sure) we would also want to cluster based on Y distance. 
-    # This clustering approach may be good to separate out into a separate file that has a bunch of "algorithms" for text / IBOCR processing
-    X_DIST_THRESHOLD = processing_config['X_DIST_THRESHOLD']
-    for data_dir in self.datadir:
-        files = os.listdir(data_dir)
-        logging.info("Generating candidates for {} files".format(len(files)))
-        for fname in files:
-            fpath = os.path.join(data_dir, fname)
-            f = open(fpath)
-            file = json.load(f)
-            dictionary = file[0]
-            dictionary.keys()
-            lines = dictionary['lines']
-
-            words = [[]]
-            for line in lines:
-                for word in line: 
-                    start = word['start_x']
-                    if not words[-1]:
-                        words[-1].append(word)
-                        continue
-                    if start - words[-1][-1]['end_x'] < X_DIST_THRESHOLD:
-                        words[-1].append(word)
-                        continue
-                    words.append([word])
-                words.append([])
-            
-            phrases = []
-            for cluster in words:
-                phrases.append(' '.join([w['word'] for w in cluster]))
-        
-            # remove special characters and other filters
-            candidates = []
-            for phrase in phrases:
-                phrase = StringProcessing.find_remove_opening_token(phrase, '"')
-                if StringProcessing.remove_digits_filter_by_length(phrase, min_len=5):
-                    candidates.append(phrase)
-
-            if dataset_config.get('identifier'):
-                identifier = dataset_config.get('identifier')(fname)
-            self.candidates.update({identifier: candidates})
-
-  def compare_candidates_and_goldens(self, processing_config, candidates_fields):
+  def compare_candidates_and_goldens(self, candidates_fields):
         # goldens may have more keys than dataset
         filenames = []
         person_found = 0
@@ -262,7 +275,7 @@ class DataCuration():
 
 
         total_files = len(filenames)
-        logging.info("For X_DIST_THRESHOLD configuraion: {0}".format(processing_config['X_DIST_THRESHOLD']))
+        logging.info("For X_DIST_THRESHOLD configuraion: {0}".format(self.processing_config['X_DIST_THRESHOLD']))
         logging.info("total files: {0}\nperson names found in candidates: {1}\norg names found in candidates: {2}\n".format(total_files, len(person_found_files), len(org_found_files)))
     
 
@@ -271,9 +284,6 @@ class FeatureEngineering():
         self.labels_dict = usecase.labels_dict
         self.data = data_curation
         self.candidates_fields = candidates_fields
-
-    def generate_test_samples(self):
-        return
 
     def generate_test_samples_from_goldens(self):
         labels = []
@@ -308,6 +318,12 @@ class FeatureEngineering():
             test_samples[key] = df
         return test_samples
 
+    @staticmethod
+    def get_subset_for_debugging(data_object, sample_size=10):
+        if isinstance(data_object, dict):
+            return dict(random.sample(data_object.items(), sample_size))
+        elif isinstance(data_object, pd.DataFrame):
+            return data_object.sample(n=sample_size)
 
 class ModelEvaluator():
     def __init__(self, usecase):
@@ -362,6 +378,8 @@ class ModelEvaluator():
         gpu = self.eval_config['gpu']
         if self.eval_config['use_goldens']: 
             # testdata is single dataframe as data is generated using goldens csv
+            logging.info("inferring BERT classifier for single df generated from goldens csv of size {}".format(testdata.shape))
+            logging.info("Make sure Eval_Config.use_goldens is set to True")
             return get_classifier_inference(model_file_or_path, testdata, self.num_labels, gpu)
         else:
             # test_data is a dictionary {'filename' : dataframe}
