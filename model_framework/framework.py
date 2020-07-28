@@ -1,27 +1,13 @@
-import csv
 import json
 import os
 import pandas as pd
 import re
 import string
-import logging
-import numpy as np
 import math
-import ast
-
-from sklearn.metrics import f1_score, precision_score, recall_score
 import numpy as np
-import torch
-from torch import nn
 import logging
 import itertools
-import difflib
 import random
-import sklearn
-from sklearn.linear_model import LogisticRegression
-from sklearn import metrics
-from sklearn.metrics import confusion_matrix
-from sklearn.metrics import classification_report
 
 # Point to instabase SDK, use SDK to download. We only need this for development, can remove this later 
 # ToDo: This is fine for now, but we should make it so that this is an ENV variable (or eventually an actual pip dependency)
@@ -34,15 +20,9 @@ from instabase_sdk import Instabase
 
 PUNC_TABLE = str.maketrans({key: None for key in string.punctuation})
 
-from infer_bert_classifier import get_classifier_inference
 from bert_utils import update_bert_embeddings
 from rule_features import rules
 from preprocessing import preprocessing_rules
-
-import keras
-from keras.models import Sequential
-from keras.layers import Dense, Dropout
-import matplotlib.pyplot as plt
 
 # Import instabase. We only need this for development, can remove this later 
 # ToDo: This is fine for now, but we should make it so that this is an ENV variable (or eventually an actual pip dependency)
@@ -64,14 +44,6 @@ class Task():
      def __init__(self, config):
         self.config = config
 
-class Task_NER():
-    def __init__(self, config):
-        self.config = config
-        self.set_labels_dict()
-
-    def set_labels_dict(self):
-        self.labels_dict = self.config['labels_dict']
-        self.cat_dict = {v: k for k, v in self.labels_dict.items()}
 
 class StringProcessing():
     @staticmethod
@@ -162,6 +134,7 @@ class StringProcessing():
                 result_dict['true_positives'].append(single_result)
 
         return fn
+
 
 class IbocrTextProcessing():
     @staticmethod
@@ -431,372 +404,11 @@ class DataCuration():
         return (np.array(samples), np.array(targets), warnings)
 
 
-class EmbeddingCache:
-    def __init__(self):
-        # Model cache
-        self.glove_model = None
-        self.bert_model = None
-
-        # Result cache
-        self.glove = {}
-        self.bert = {}
-
-# Cache for word embeddings
-EMBEDDING_CACHE = EmbeddingCache()
-
 class ModelTrainer():
     def __init__(self, data_args,  training_args):
         self.data_args = data_args
         self.training_args = training_args
 
-class MLP(ModelTrainer):
-    def __init__(self, data_args,  training_args, model):
-        self.data_args = data_args
-        self.training_args = training_args
-        self.model = model
-
-    def train(self, X_train, X_test, y_train, y_test):
-        logging.info('Training multilayer perceptron model for {} samples'.format(X_train.shape[0]))
-        history = self.model.fit(X_train, y_train, validation_data=(X_test, y_test), 
-            epochs=self.training_args['epochs'], batch_size=self.training_args['batch_size'])
-        self.history = history
-
-    def evaluate(self):
-        logging.info(self.history.history.keys())
-        plt.plot(self.history.history['accuracy'])
-        plt.plot(self.history.history['val_accuracy'])
-        plt.title('Model accuracy')
-        plt.ylabel('Accuracy')
-        plt.xlabel('Epoch')
-        plt.legend(['Train', 'Test'], loc='upper left')
-        plt.show()
-
-        plt.plot(self.history.history['loss'])
-        plt.plot(self.history.history['val_loss']) 
-        plt.title('Model loss') 
-        plt.ylabel('Loss') 
-        plt.xlabel('Epoch') 
-        plt.legend(['Train', 'Test'], loc='upper left') 
-        plt.show()
-        return self.history.history['val_accuracy'][-1]
-
-    def analyze(self, found_mapping, comparison_fns, fields=None):
-        # Sample usage: omf_paystubs.evaluate({k: {self.data_args['candidates_fields']['org']: found_companies[k]} for k in found_companies}, {}, fields=[self.data_args['candidates_fields']['org']])
-
-        """
-        comparison_fns: Map<Text, (sample, field, expected, actual, result_dict): None>
-        """
-        results = {
-            'true_positives': [],
-            'false_positives': [],
-            'true_negatives': [],
-            'false_negatives': []
-        }
-
-        golden = self.data_args['dataset'].golden
-        to_compare = golden.columns
-        if fields:
-            to_compare = fields
-
-        for sample in golden.index:
-            actual = found_mapping.get(sample, {})
-            for field in to_compare:
-                expected_field = golden.at[sample, field]
-                actual_field = actual.get(field)
-                if field in comparison_fns:
-                    comparison_fns[field](sample, field, expected_field, actual_field,
-                                            results)
-                else:
-                    StringProcessing.StrictEquality()(sample, field, expected_field, actual_field,
-                                results)
-        return results
-
-    def predict(self, threshold=0.60, distance_threshold=1.5):
-        
-        results = {}
-        for dataset_file in list(self.data_args['dataset'].dataset.keys()):
-            logging.info("Running predictions for file: {}".format(dataset_file))
-            try:
-                ibdoc = self.data_args['dataset'].dataset[dataset_file].get_joined_page()[0] # 20, 54, 70
-                featurizer = IBDOCFeaturizer(ibdoc)
-                fvs = featurizer.get_feature_vectors(self.data_args['data_config'])
-        #         print(ibdoc.get_text())
-        #         print('=================================')
-                predictions = self.model.predict(fvs)
-                predictions = predictions.tolist()
-                sequences = [[]]
-                for i, classification in enumerate(predictions):
-                    if classification[0] > threshold:
-                        token_to_add = featurizer.get_all_tokens()[i]
-                        to_add_start, to_add_height = token_to_add['start_x'], token_to_add['line_height']
-                        if len(sequences[-1]) > 0 and (to_add_start - sequences[-1][-1]['end_x']) <= distance_threshold * to_add_height:
-                            sequences[-1].append(token_to_add)
-                        else:
-                            sequences.append([token_to_add])
-                    elif len(sequences[-1]) > 0:
-                        sequences.append([])
-                companies = [' '.join([ss['word'] for ss in s]) for s in sequences if len(s) > 1]
-                results[dataset_file] = companies
-            except Exception as e:
-                print(e)
-        
-        return results
-
-    def analyze_result(self, found_companies):
-        total = 0
-        found_count = 0
-        for cfile in found_companies:
-            try:
-                expected = self.data_args['dataset'].golden.at[cfile, self.data_args['candidates_fields']['org']]
-            except Exception as e:
-                print(e)
-                continue
-            found = '\n\t\t'.join(found_companies[cfile])
-            print(cfile[-10:])
-            print('\t Found:\n\t\t{}'.format(found))
-            print('\t Expected:\n\t\t{}'.format(expected))
-            if expected:  
-                total += 1
-            expected_san = expected.lower().strip().translate(PUNC_TABLE)
-            actual_san = [c.lower().strip().translate(PUNC_TABLE) for c in found_companies[cfile]]
-            is_contained = any([(expected_san in a) for a in actual_san]) or any([(a in expected_san) for a in actual_san])
-            if expected_san in actual_san or is_contained:
-                found_count += 1
-            else:
-                print('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
-        print(total)
-        print(found_count)
-        print('Recall: {}'.format(float(found_count)/float(total)))
-
-    def demo(self):
-        ibdoc = self.data_args['dataset'].dataset[list(self.data_args['dataset'].dataset.keys())[54]].get_joined_page()[0] # 20, 54, 70
-        featurizer = IBDOCFeaturizer(ibdoc)
-        fvs = featurizer.get_feature_vectors(self.data_args['data_config'])
-        print(ibdoc.get_text())
-        print('=================================')
-        predictions = self.model.predict(fvs)
-        predictions = predictions.tolist()
-        sequences = [[]]
-        for i, classification in enumerate(predictions):
-            if classification[0] > 0.99:
-                token_to_add = featurizer.get_all_tokens()[i]
-                to_add_start, to_add_height = token_to_add['start_x'], token_to_add['line_height']
-                if len(sequences[-1]) > 0 and (to_add_start - sequences[-1][-1]['end_x']) <= 1.5 * to_add_height:
-                    sequences[-1].append(token_to_add)
-                else:
-                    sequences.append([token_to_add])
-            elif len(sequences[-1]) > 0:
-                sequences.append([])
-        companies = [' '.join([ss['word'] for ss in s]) for s in sequences if len(s) > 1]
-        print(companies)
-
-
-class BERT_NER(ModelTrainer):
-    def train(self):
-        pass
-
-    def evaluate(self):
-        # cross validation accuracy
-        pass
-
-    def predict(self, testdata):
-        self.labels_dict = self.data_args['task'].labels_dict
-        self.cat_dict = self.data_args['task'].cat_dict
-        self.num_labels = self.training_args['num_labels']
-
-        model_file_or_path = self.training_args['model_file_or_path']
-        
-        gpu = self.training_args['gpu']
-        if isinstance(testdata, pd.DataFrame): 
-            # testdata is single dataframe as data is generated using goldens csv
-            logging.info("inferring BERT classifier for single df generated from goldens csv of size {}".format(testdata.shape))
-            return get_classifier_inference(model_file_or_path, testdata, self.num_labels, gpu)
-        elif isinstance(testdata, dict):
-            # test_data is a dictionary {'filename' : dataframe}
-            results = {}
-            for key in testdata:
-                logging.info("inferring BERT classifier for file {}".format(key))
-                results[key] = get_classifier_inference(model_file_or_path, testdata[key], self.num_labels, gpu)
-            
-            return results
-    
-    def analyze_golden_result(self, results):
-        labels = [x for x in range(self.num_labels - 1)] # Not to include 'None' class since it is never in true_label
-        true_labels = results['label']
-        predictions = results['predicted']
-
-        # Overall Score
-        micro_precision = precision_score(true_labels, predictions, labels=labels, average="micro")
-        micro_recall = recall_score(true_labels, predictions,  labels=labels, average="micro")
-        micro_f1 = f1_score(true_labels, predictions, labels=labels, average="micro")
-        logging.info('Micro Test R: {0:0.4f}, P: {1:0.4f}, F1: {2:0.4f}'.format(micro_recall, micro_precision, micro_f1))
-
-        macro_precision = precision_score(true_labels, predictions, labels=labels, average="macro")
-        macro_recall = recall_score(true_labels, predictions, labels=labels, average="macro")
-        macro_f1 = f1_score(true_labels, predictions, labels=labels, average="macro")
-        logging.info('Macro Test R: {0:0.4f}, P: {1:0.4f}, F1: {2:0.4f}'.format(macro_recall, macro_precision, macro_f1))
-
-        # Class Wise Score
-        for lab in labels:
-            # micro vs macro doesn't matter in case of single-label
-            precision = precision_score(true_labels, predictions, labels=[lab], average="micro")
-            recall = recall_score(true_labels, predictions,  labels=[lab], average="micro")
-            f1 = f1_score(true_labels, predictions, labels=[lab], average="micro")
-            logging.info('Category: {0}, Test R: {1:0.4f}, P: {2:0.4f}, F1: {3:0.4f}'.format(self.cat_dict[lab], recall, precision, f1))
-    
-    def analyze_result(self, results):
-        # results is a list of dataframes (one for each file) -- BERT's outputs
-        person_recall = []
-        person_precision = []
-        org_recall = []
-        org_precision = []
-
-        final_results = {}
-        final_results['person'] = {}
-        final_results['org'] = {}
-
-        for key in results:
-            bert_results = results[key]
-            bert_results['predicted'] = bert_results['predicted'].astype(int)
-            bert_person_df = bert_results[bert_results['predicted'] == self.labels_dict['person']]
-            bert_org_df = bert_results[bert_results['predicted'] == self.labels_dict['org']]
-            
-            retrieved_person = bert_person_df['context'].tolist()
-            retrieved_org = bert_org_df['context'].tolist()
-            relevant_person = self.data_args['dataset'].golden.loc[key, self.data_args['candidates_fields']['person']]
-            relevant_org = self.data_args['dataset'].golden.loc[key, self.data_args['candidates_fields']['org']]
-            
-            # PERSON NAMES
-            retrieved, relevant = Evaluation.get_Retr_Rel_Set(retrieved_person, relevant_person)
-            precision, recall = Evaluation.get_Precision_Recall(retrieved, relevant)
-            person_precision.append(precision)
-            person_recall.append(recall)
-            final_results['person'][key] = retrieved
-
-            # ORG NAMES
-            retrieved, relevant = Evaluation.get_Retr_Rel_Set(retrieved_org, relevant_org)
-            precision, recall = Evaluation.get_Precision_Recall(retrieved, relevant)
-            org_precision.append(precision)
-            org_recall.append(recall)
-            final_results['org'][key] = retrieved
-            
-
-        r = np.mean(person_recall)
-        p = np.mean(person_precision)
-        f1 = 2*p*r/(p + r)
-        logging.info("For field {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format('person', r, p, f1))
-
-        r = np.mean(org_recall)
-        p = np.mean(org_precision)
-        f1 = 2*p*r/(p + r)
-        logging.info("For field {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format('org', r, p, f1))
-        return final_results
-
-    def demo(self, results):
-        # Print results
-        for typ in results:
-            logging.info('Field type: {}'.format(typ))
-            for key in results[typ]:
-                logging.info('filename: {}'.format(key))
-                logging.info(results[typ][key])
-
-class Refiner(ModelTrainer):
-    def __init__(self, data_args, training_args, models_to_evaluate):
-        self.data_args = data_args
-        self.training_args = training_args
-        self.models_to_evaluate = models_to_evaluate
-
-    def analyze_results(self):
-        result_file_path = self.training_args['model_file_or_path']
-        models = self.models_to_evaluate['models']
-        spacy_models = self.models_to_evaluate['spacy_models']
-        person_name_models = self.models_to_evaluate['person_name_models']
-        org_name_models = self.models_to_evaluate['org_name_models']
-
-        all_recall = {}
-        all_precision = {}
-
-        final_results = {}
-        final_results['person'] = {}
-        final_results['org'] = {}
-
-        f = open(result_file_path)
-        results = json.load(f)
-        for result in results:
-            # one file at a time
-            key = result['absolute_ibocr_path'].split('/')[-1]
-            key = ".".join(key.split('.')[:-1])
-            names = {}
-            phrases = result['refined_phrases']
-            for phrase in phrases:
-                # one model/refiner field at a time
-                label = phrase['label']
-                if label in models:
-                    word_list = ast.literal_eval(phrase["word"])
-                    cleaned_word_list = [" ".join(w.split()) for w in word_list]
-
-                elif label in spacy_models:
-                    jsonstr = phrase["word"]
-                    json_dict = json.loads(jsonstr)
-                    entities = json_dict["entities"]
-                    cleaned_word_list = [" ".join(ent_json['entity'].split()) for ent_json in entities]
-                    # remove all occurences of empty string
-                    cleaned_word_list = list(filter(('').__ne__, cleaned_word_list))
-
-
-                names[label] = cleaned_word_list
-        
-            relevant_person = self.data_args['dataset'].golden.loc[key, self.data_args['candidates_fields']['person']]
-            relevant_org = self.data_args['dataset'].golden.loc[key, self.data_args['candidates_fields']['org']]
-
-            # PERSON NAMES
-            for model in person_name_models:
-                retrieved, relevant = Evaluation.get_Retr_Rel_Set(names[model], relevant_person)
-                precision, recall = Evaluation.get_Precision_Recall(retrieved, relevant)
-                
-                if model in final_results['person']:
-                    final_results['person'][model][key] = retrieved
-                else:
-                    final_results['person'][model] = {}
-
-                if model in all_recall:
-                    all_recall[model].append(recall)
-                    all_precision[model].append(precision)
-                else:
-                    all_recall[model] = [recall]
-                    all_precision[model] = [precision]    
-            
-            
-            # ORG NAMES
-            for model in org_name_models:
-                retrieved, relevant = Evaluation.get_Retr_Rel_Set(names[model], relevant_org)
-                precision, recall = Evaluation.get_Precision_Recall(retrieved, relevant)
-                        
-                if model in final_results['org']:
-                    final_results['org'][model][key] = retrieved
-                else:
-                    final_results['org'][model] = {}
-
-                if model in all_recall:
-                    all_recall[model].append(recall)
-                    all_precision[model].append(precision)
-                else:
-                    all_recall[model] = [recall]
-                    all_precision[model] = [precision]    
-
-        Evaluation.print_scores(all_recall, all_precision, person_name_models, org_name_models)
-        return final_results
-    
-    def demo(self, results):
-        # Print results
-        for typ in results:
-            print('Field type: ', typ)
-            for model in results[typ]:
-                print('model type: ', model)
-                for key in results[typ][model]:
-                    print('filename: ', key)
-                    print(results[typ][model][key])
-        
 
 class FeatureEngineering():
     @staticmethod
@@ -819,71 +431,6 @@ class FeatureEngineering():
         elif isinstance(data_object, pd.DataFrame):
             return data_object.sample(n=sample_size)
 
-
-class FeatureEngineering_NER(FeatureEngineering):
-    def __init__(self, data_args):
-        self.labels_dict = data_args['task'].labels_dict
-        self.data = data_args['dataset']
-        self.candidates_fields = data_args['candidates_fields']
-
-    def generate_test_samples_from_goldens(self):
-        labels = []
-        contexts = []
-
-        persons = self.data.golden[self.candidates_fields['person']].tolist()
-        person_label = [self.labels_dict['person']] * len(persons)
-
-        contexts.extend(persons)
-        labels.extend(person_label)
-
-        org = self.data.golden[self.candidates_fields['org']].tolist()
-        org_label = [self.labels_dict['org']] * len(org)
-
-        contexts.extend(org)
-        labels.extend(org_label)
-
-        test_samples = pd.DataFrame(list(zip(contexts, labels)), columns=['context', 'label'])
-        test_samples = test_samples.sample(frac=1)
-        test_samples = test_samples.dropna()
-        return test_samples
-
-    def generate_test_samples_from_candidates(self):
-        test_samples = {}
-        for key in self.data.candidates:
-            candidate_list = self.data.candidates[key]
-            labels = [np.nan] * len(candidate_list)
-            df = pd.DataFrame(list(zip(candidate_list, labels)), columns=['context', 'label'])
-            df = df.drop_duplicates()  # redundant strings
-            df['context'] = df['context'].astype(str)
-            df['label'] = df['label'].astype(float)
-            test_samples[key] = df
-        return test_samples
-
-
-class FeatureEngineering_MLP(FeatureEngineering):
-    def __init__(self, data_args):
-        self.task = data_args['task']
-        self.data = data_args['dataset']
-        self.data_config = data_args['data_config']
-        self.candidates_fields = data_args['candidates_fields']
-
-    def create_train_test_data(self):
-        # Balance samples by removing some non-entity labeled datapoints
-        samples, targets, warnings = self.data.generate_spatial_samples(self.candidates_fields['org'], self.data_config)
-        pos_idx = np.where(targets == 1)[0]
-        num_pos_samples = len(pos_idx)
-
-        neg_idxs_all = np.where(targets == 0)[0]
-        np.random.shuffle(neg_idxs_all)
-        neg_idx = neg_idxs_all[:num_pos_samples]
-
-        idx_to_use = np.concatenate((pos_idx, neg_idx))
-
-        filtered_samples = samples[idx_to_use]
-        filtered_targets = targets[idx_to_use]
-
-        X_train, X_test, y_train, y_test = sklearn.model_selection.train_test_split(filtered_samples, filtered_targets, test_size=0.3, random_state=0)
-        return (X_train, X_test, y_train, y_test)
 
 class Evaluation():
     @staticmethod
@@ -1047,6 +594,21 @@ class OCRUtils:
     @staticmethod
     def get_tokens_that_match(text, word_polys):
         pass
+
+
+class EmbeddingCache:
+    def __init__(self):
+        # Model cache
+        self.glove_model = None
+        self.bert_model = None
+
+        # Result cache
+        self.glove = {}
+        self.bert = {}
+
+# Cache for word embeddings
+EMBEDDING_CACHE = EmbeddingCache()
+
 
 class IBDOCFeaturizer:
 

@@ -1,1 +1,11 @@
 *.csv
+/ibnlp/.DS_Store
+/ibnlp/.ipynb_checkpoints/
+/ibnlp/features.txt
+/ibnlp/__pycache__/
+/.DS_Store
+/.idea/
+/.vscode/
+/model_framework/.DS_Store
+/model_framework/__pycache__/
+/ocr/
