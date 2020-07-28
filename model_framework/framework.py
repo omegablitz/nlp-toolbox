@@ -701,14 +701,17 @@ class BERT_NER(ModelTrainer):
                 logging.info(results[typ][key])
 
 class Refiner(ModelTrainer):
+    def __init__(self, data_args, training_args, models_to_evaluate):
+        self.data_args = data_args
+        self.training_args = training_args
+        self.models_to_evaluate = models_to_evaluate
+
     def analyze_results(self):
         result_file_path = self.training_args['model_file_or_path']
-        models = ['names_vontell', 'names_token_matcher']
-        spacy_models = ['names_spacy', 'org_spacy']
-
-        # add bert in below list, if precomputed results available from analyze_overall_result()
-        person_name_models = ['names_vontell', 'names_token_matcher', 'names_spacy']
-        org_name_models = ['org_spacy']
+        models = self.models_to_evaluate['models']
+        spacy_models = self.models_to_evaluate['spacy_models']
+        person_name_models = self.models_to_evaluate['person_name_models']
+        org_name_models = self.models_to_evaluate['org_name_models']
 
         all_recall = {}
         all_precision = {}
