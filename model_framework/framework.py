@@ -272,6 +272,7 @@ class DataCuration():
                 if len(list(self.golden.index)) != len(set(self.golden.index)):
                     logging.info("Goldens have non-unique filenames, keeping only the first values")
                     self.golden = self.golden.loc[~self.golden.index.duplicated(keep='first')]
+                    self.golden = self.golden.set_index(goldens_config['index_field_name'])
 
                 logging.info('Total files Goldens: {}'.format(self.golden_all.shape))
                 logging.info('Total files found in the source with unique index: {}'.format(self.golden.shape))
@@ -403,7 +404,29 @@ class DataCuration():
 
         return (np.array(samples), np.array(targets), warnings)
 
+    def _split_train_test(self, data, per):
+        if isinstance(data, pd.DataFrame):
+            msk = np.random.rand(len(data)) < per
+            train_data = data[msk]
+            test_data = data[~msk]
+            logging.info('Total samples {0}, training samples: {1}, Test Samples: {2}'.format(data.shape[0], train_data.shape[0], test_data.shape[0]))
+            return train_data, test_data
 
+        elif isinstance(data, dict):
+            list_items = list(data.items())
+            random.shuffle(list_items)
+
+            num_train_samples = (int)(per * len(list_items))
+            train_data = dict(list_items[:num_train_samples])
+            test_data = dict(list_items[num_train_samples:])
+            logging.info('Total samples {0}, training samples: {1}, Test Samples: {2}'.format(len(list_items), len(train_data.keys()), len(test_data.keys())))
+            return train_data, test_data
+
+    def split_train_test(self, per=0.7):
+        self.golden_train, self.golden_test = self._split_train_test(self.golden, per)
+        self.data_train, self.test_data = self._split_train_test(self.dataset, per)
+    
+        
 class ModelTrainer():
     def __init__(self, data_args,  training_args):
         self.data_args = data_args

@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from framework import Task, ModelTrainer, FeatureEngineering, Evaluation, StringProcessing, IBDOCFeaturizer, PUNC_TABLE
 
 
-class FeatureEngineeringMLP(FeatureEngineering):
+class FeatureEngineeringMultiLayerPerceptron(FeatureEngineering):
     def __init__(self, data_args):
         self.task = data_args['task']
         self.data = data_args['dataset']
@@ -31,7 +31,7 @@ class FeatureEngineeringMLP(FeatureEngineering):
         return (X_train, X_test, y_train, y_test)
 
 
-class MLP(ModelTrainer):
+class MultiLayerPerceptron(ModelTrainer):
     def __init__(self, data_args,  training_args, model):
         self.data_args = data_args
         self.training_args = training_args
