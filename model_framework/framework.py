@@ -387,7 +387,7 @@ class DataCuration():
 
             # Collect negative examples
             if not data_config['balance_targets']:
-                print("NOT BALANCING TARGETS")
+                logging.info("NOT BALANCING TARGETS")
                 fvs = featurizer.get_feature_vectors(data_config)
                 for idx in range(len(fvs)):
                     samples.append(fvs[idx])
@@ -404,7 +404,8 @@ class DataCuration():
 
         return (np.array(samples), np.array(targets), warnings)
 
-    def _split_train_test(self, data, per):
+    @staticmethod
+    def _split_train_test(data, per):
         if isinstance(data, pd.DataFrame):
             msk = np.random.rand(len(data)) < per
             train_data = data[msk]
@@ -423,8 +424,11 @@ class DataCuration():
             return train_data, test_data
 
     def split_train_test(self, per=0.7):
+        # split dataset and as well as goldens
+        # ToDo: right now, training data created from golden dataframe only, if train/test split of self.dataset required, split by same random seed
+
         self.golden_train, self.golden_test = self._split_train_test(self.golden, per)
-        self.data_train, self.test_data = self._split_train_test(self.dataset, per)
+        # self.data_train, self.test_data = self._split_train_test(self.dataset, per)
     
         
 class ModelTrainer():
