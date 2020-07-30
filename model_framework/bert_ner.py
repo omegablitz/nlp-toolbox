@@ -5,6 +5,7 @@ import numpy as np
 import re
 from framework import Task, ModelTrainer, FeatureEngineering, Evaluation, DataCuration
 from infer_bert_classifier import get_classifier_inference
+from bert_finetuning import finetune_bert
 from sklearn.metrics import f1_score, precision_score, recall_score
 import nltk
 from nltk.corpus import stopwords
@@ -266,11 +267,8 @@ class FeatureEngineeringNER(FeatureEngineering):
 
 class BERTNER(ModelTrainer):
     def train(self):
-        pass
-
-    def evaluate(self):
-        # cross validation accuracy
-        pass
+        logging.info("Finetuning BERT Model")
+        finetune_bert(**self.training_args)
 
     def predict(self, testdata):
         self.labels_dict = self.data_args['task'].labels_dict
