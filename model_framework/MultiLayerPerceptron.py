@@ -1,6 +1,6 @@
 import logging
 import numpy as np
-import sklearn
+from sklearn import model_selection
 import matplotlib.pyplot as plt
 from framework import Task, ModelTrainer, FeatureEngineering, Evaluation, StringProcessing, IBDOCFeaturizer, PUNC_TABLE
 
@@ -27,7 +27,7 @@ class FeatureEngineeringMultiLayerPerceptron(FeatureEngineering):
         filtered_samples = samples[idx_to_use]
         filtered_targets = targets[idx_to_use]
 
-        X_train, X_test, y_train, y_test = sklearn.model_selection.train_test_split(filtered_samples, filtered_targets, test_size=0.3, random_state=0)
+        X_train, X_test, y_train, y_test = model_selection.train_test_split(filtered_samples, filtered_targets, test_size=0.3, random_state=0)
         return (X_train, X_test, y_train, y_test)
 
 

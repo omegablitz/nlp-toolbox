@@ -272,7 +272,6 @@ class DataCuration():
                 if len(list(self.golden.index)) != len(set(self.golden.index)):
                     logging.info("Goldens have non-unique filenames, keeping only the first values")
                     self.golden = self.golden.loc[~self.golden.index.duplicated(keep='first')]
-                    self.golden = self.golden.set_index(goldens_config['index_field_name'])
 
                 logging.info('Total files Goldens: {}'.format(self.golden_all.shape))
                 logging.info('Total files found in the source with unique index: {}'.format(self.golden.shape))
