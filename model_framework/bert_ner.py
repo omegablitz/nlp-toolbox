@@ -276,8 +276,8 @@ class BERTNER(ModelTrainer):
         self.num_labels = self.training_args['num_labels']
         model_type = self.training_args['model_type']
         model_file_or_path = self.training_args['model_file_or_path']
-        
         gpu = self.training_args['gpu']
+        
         if isinstance(testdata, pd.DataFrame): 
             # testdata is single dataframe as data is generated using goldens csv
             logging.info("inferring BERT classifier for single df generated from goldens csv of size {}".format(testdata.shape))

@@ -149,12 +149,13 @@ class IbocrTextProcessing():
                 fpath = os.path.join(data_dir, fname)
                 f = open(fpath)
                 file = json.load(f)
-                dictionary = file[0]
-                dictionary.keys()
-                texts_list = dictionary['text']
+                all_texts = ""
+                for page in file:
+                    this_texts = page['text']
+                    all_texts = all_texts + this_texts + "\n"
                 if dataset_config.get('identifier'):
-                    identifier = dataset_config.get('identifier')(fname)
-                texts.update({identifier: texts_list})
+                        identifier = dataset_config.get('identifier')(fname)
+                texts.update({identifier: all_texts})
         
         return texts
 
@@ -246,7 +247,7 @@ class DataCuration():
         else:
             files = os.listdir(dataset_path)
             for file in files:
-                with open(os.path.join(dataset_path, file)) as f:
+                with open(os.path.join(dataset_path, file), 'rb') as f:
                     file_objects.append(f.read())
         
         return files, file_objects
