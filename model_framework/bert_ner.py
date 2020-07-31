@@ -274,20 +274,20 @@ class BERTNER(ModelTrainer):
         self.labels_dict = self.data_args['task'].labels_dict
         self.cat_dict = self.data_args['task'].cat_dict
         self.num_labels = self.training_args['num_labels']
-
+        model_type = self.training_args['model_type']
         model_file_or_path = self.training_args['model_file_or_path']
         
         gpu = self.training_args['gpu']
         if isinstance(testdata, pd.DataFrame): 
             # testdata is single dataframe as data is generated using goldens csv
             logging.info("inferring BERT classifier for single df generated from goldens csv of size {}".format(testdata.shape))
-            return get_classifier_inference(model_file_or_path, testdata, self.num_labels, gpu)
+            return get_classifier_inference(model_type, model_file_or_path, testdata, self.num_labels, gpu)
         elif isinstance(testdata, dict):
             # test_data is a dictionary {'filename' : dataframe}
             results = {}
             for key in testdata:
                 logging.info("inferring BERT classifier for file {}".format(key))
-                results[key] = get_classifier_inference(model_file_or_path, testdata[key], self.num_labels, gpu)
+                results[key] = get_classifier_inference(model_type, model_file_or_path, testdata[key], self.num_labels, gpu)
             
             return results
     

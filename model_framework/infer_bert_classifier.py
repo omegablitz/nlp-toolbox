@@ -14,21 +14,20 @@ import transformers
 sys.path.insert(0, os.path.abspath('..'))
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
-def get_classifier_inference(modelPath, testdf, num_labels, gpu):
+def get_classifier_inference(model_type, modelPath, testdf, num_labels, gpu):
     logging.getLogger('transformers').setLevel(logging.WARNING)
 
-    model_name_or_path = "bert-large-cased"
     device = torch.device("cuda" if (gpu and torch.cuda.is_available()) else "cpu")
     logging.debug('Device: {}'.format(device))
 
     model_state_dict = torch.load(modelPath, map_location=device)
-    model = BertForSequenceClassification.from_pretrained(model_name_or_path, state_dict=model_state_dict, num_labels=num_labels)
+    model = BertForSequenceClassification.from_pretrained(model_type, state_dict=model_state_dict, num_labels=num_labels)
     logging.debug("Fine-tuned model loaded with labels = {}".format(model.num_labels))
 
     model = model.to(device)
     model.eval()
 
-    tokenizer = BertTokenizer.from_pretrained(model_name_or_path, do_lower_case=True)
+    tokenizer = BertTokenizer.from_pretrained(model_type, do_lower_case=True)
 
     # testing
     input_ids, labels, attention_masks = convert_sentences_to_bert_inputs(tokenizer, testdf)
