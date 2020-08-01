@@ -133,7 +133,7 @@ def get_qa_inference(data_texts, queries, model_name_or_path, output_dir, gpu):
         # Run method
         predictions = run_prediction(model, tokenizer, device, output_dir, key, queries, context)
 
-        this_results = []
+        this_results = [key]
         # Print results
         for ind, key in enumerate(predictions.keys()):
             print(queries[ind] + " : " + predictions[key])
