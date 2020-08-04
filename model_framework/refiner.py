@@ -1,5 +1,6 @@
 import json
 import ast
+import logging
 from framework import Task, ModelTrainer, FeatureEngineering, Evaluation, StringProcessing
 
 
@@ -100,12 +101,12 @@ class Refiner(ModelTrainer):
         Evaluation.print_scores(all_recall, all_precision, person_name_models, org_name_models)
         return final_results
 
-    def demo(self, results):
+    def demo(self, results, filename):
         # Print results
         for typ in results:
-            print('Field type: ', typ)
+            logging.info('Field type: {}'.format(typ))
             for model in results[typ]:
-                print('model type: ', model)
-                for key in results[typ][model]:
-                    print('filename: ', key)
-                    print(results[typ][model][key])
+                logging.info('model type: {}'.format(model))
+                logging.info(results[typ][model][filename])
+                logging.info("\n")
+            logging.info("\n")

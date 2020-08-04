@@ -363,11 +363,10 @@ class BERTNER(ModelTrainer):
         logging.info("For field {0}, recall: {1:0.4f}, precision: {2:0.4f}, F1: {3:0.4f} ".format('org', r, p, f1))
         return final_results
 
-    def demo(self, results):
+    def demo(self, results, filename):
         # Print results
         for typ in results:
             logging.info('Field type: {}'.format(typ))
-            for key in results[typ]:
-                logging.info('filename: {}'.format(key))
-                logging.info(results[typ][key])
+            logging.info('filename: {}'.format(filename))
+            logging.info(results[typ][filename])
 
