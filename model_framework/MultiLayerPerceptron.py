@@ -93,10 +93,13 @@ class MultiLayerPerceptron(ModelTrainer):
                                 results)
         return results
 
-    def predict(self, threshold=0.60, distance_threshold=1.5):
+    def predict(self, num_samples, threshold=0.60, distance_threshold=1.5):
         
         results = {}
-        for dataset_file in list(self.data_args['dataset'].dataset.keys()):
+        total_samples = list(self.data_args['dataset'].dataset.keys())
+        selected_samples = total_samples[:num_samples]
+
+        for dataset_file in selected_samples:
             logging.info("Running predictions for file: {}".format(dataset_file))
             try:
                 ibdoc = self.data_args['dataset'].dataset[dataset_file].get_joined_page()[0] # 20, 54, 70
