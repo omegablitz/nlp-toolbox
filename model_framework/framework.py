@@ -436,6 +436,18 @@ class ModelTrainer():
         self.data_args = data_args
         self.training_args = training_args
 
+    def train(self):
+        raise NotImplementedError('Implement train method for the ModelTrainer')
+
+    def predict(self):
+        raise NotImplementedError('Implement predict method for the ModelTrainer')
+
+    def analyze_result(self):
+        raise NotImplementedError('Implement analyze_result method for the ModelTrainer')
+
+    def demo(self):
+        raise NotImplementedError('Implement demo method for the ModelTrainer')
+
 
 class FeatureEngineering():
     @staticmethod
