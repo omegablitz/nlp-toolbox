@@ -222,17 +222,20 @@ class DataCuration():
         self.golden_config = goldens_config
 
         dataset_paths = dataset_config['path']
-        goldens_paths = goldens_config['path']
-
+        
         if type(dataset_paths) != list:
             dataset_paths = [dataset_paths]
 
-        if type(goldens_paths) != list:
-            goldens_paths = [goldens_paths]
-
         self.datadir = dataset_paths
         self._load_ib_dataset(dataset_paths, dataset_config)
-        self._load_goldens(goldens_paths, goldens_config)
+
+        if goldens_config is not None:
+            goldens_paths = goldens_config['path']
+
+            if type(goldens_paths) != list:
+                goldens_paths = [goldens_paths]
+
+            self._load_goldens(goldens_paths, goldens_config)
 
         if dataset_config['convert2txt']:
             self.texts = IbocrTextProcessing.process_IBOCR_to_txt(dataset_paths, dataset_config)
