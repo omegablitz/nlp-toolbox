@@ -31,7 +31,10 @@ class BERTQA(ModelTrainer):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        get_qa_inference(data_texts, queries, model_file_or_path, output_dir, gpu)
+        if isinstance(queries, str) is True:
+            queries = [queries]
+
+        return get_qa_inference(data_texts, queries, model_file_or_path, output_dir, gpu)
 
     def analyze_result(self, results):
         pass
