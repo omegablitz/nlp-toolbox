@@ -103,10 +103,16 @@ class Refiner(ModelTrainer):
 
     def demo(self, results, filename):
         # Print results
+        person_field_name = self.data_args['candidates_fields']['person']
+        org_field_name = self.data_args['candidates_fields']['org']
+        logging.info("golden person: {}".format(self.data_args['dataset'].golden.loc[filename, person_field_name]))
+        logging.info("golden company: {}".format(self.data_args['dataset'].golden.loc[filename, org_field_name]))
+
         for typ in results:
             logging.info('Field type: {}'.format(typ))
             for model in results[typ]:
                 logging.info('model type: {}'.format(model))
                 logging.info(results[typ][model][filename])
                 logging.info("\n")
+            
             logging.info("\n")
