@@ -114,7 +114,9 @@ def get_qa_inference(data_texts, queries, model_name_or_path, output_dir, gpu):
     tokenizer = tokenizer_class.from_pretrained(model_name_or_path, do_lower_case=True)
     model = model_class.from_pretrained(model_name_or_path, config=config)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda")
+    # device = torch.device("cpu")
 
     model.to(device)
 
